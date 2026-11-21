@@ -5,6 +5,8 @@
 #   - Tag v* (z. B. v0.3.0)   → zusätzlich GitHub-Release mit allen ZIPs
 #                               (v0.3.0-alpha / -beta / -rc → Vorabversion)
 #   - manuell                 → Actions → "Build" → "Run workflow"
+#                               Feld "Release-Tag" ausfüllen (z. B. v0.3.0-alpha)
+#                               → Tag + Release werden automatisch angelegt
 
 name: Build
 
@@ -13,6 +15,11 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release-Tag (leer = nur bauen), z. B. v0.3.0-alpha"
+        required: false
+        default: ""
 
 permissions:
   contents: write   # nötig, um Releases anzulegen
@@ -77,11 +84,30 @@ jobs:
           name: DMX-Bridge-${{ matrix.name }}
           path: DMX-Bridge-${{ matrix.name }}.zip
 
-      - name: Release (nur bei Tag v*)
-        if: startsWith(github.ref, 'refs/tags/v')
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
+    env:
+      TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Builds holen
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Release anlegen
         uses: softprops/action-gh-release@v2
         with:
-          files: DMX-Bridge-${{ matrix.name }}.zip
-          name: DMX Bridge ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: DMX Bridge ${{ env.TAG }}
+          body_path: .github/release-notes.md
+          generate_release_notes: true
           # alpha/beta/rc im Tag-Namen → als Vorabversion markieren
-          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          prerelease: ${{ contains(env.TAG, 'alpha') || contains(env.TAG, 'beta') || contains(env.TAG, 'rc') }}
+          files: dist/*.zip

@@ -67,6 +67,9 @@ struct UiState {
     rate: f32,
 
     show_ptr: usize,
+    bpm: bool,
+    /// Strobe-Rechner: (Gerät, Kanal) → Wunschfrequenz in Hz
+    strobe_target: std::collections::HashMap<(usize, usize), f32>,
 
     patch: Vec<PatchEntry>,
     patch_base: Vec<PatchEntry>,
@@ -130,6 +133,7 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
                 st.rate_t = now;
             }
 
+            st.bpm = params.freq_bpm.read().map(|v| *v).unwrap_or(false);
             let show: Option<Arc<Show>> = shared.show.lock().ok().and_then(|g| g.clone());
             if let Some(s) = &show {
                 sync_with_show(st, s);
@@ -152,7 +156,7 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
                         .id_salt("main-scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| match st.tab {
-                            Tab::Live => live_tab(ui, show, &shared, master),
+                            Tab::Live => live_tab(ui, show, &shared, master, st),
                             Tab::Patch => patch_tab(ui, show, &shared, st),
                             Tab::Fixtures => fixtures_tab(ui, show, &shared, st),
                             Tab::Library => library_tab(ui, show, &shared, st),
@@ -221,6 +225,42 @@ fn sync_with_show(st: &mut UiState, show: &Arc<Show>) {
             }
             fx.base = Some(loaded);
         }
+    }
+}
+
+fn freq_text(hz: f32, bpm: bool) -> String {
+    if bpm {
+        format!("{:.0} BPM", hz * 60.0)
+    } else if hz < 10.0 {
+        format!("{hz:.1} Hz")
+    } else {
+        format!("{hz:.0} Hz")
+    }
+}
+
+fn describe_cap(cap: &Capability, v: u8, bpm: bool) -> String {
+    match cap.strobe_hz(v) {
+        Some(hz) => format!("{} · {}", cap.label, freq_text(hz, bpm)),
+        None => cap.label.clone(),
+    }
+}
+
+/// Velocity, die beim Note-On genau diesen DMX-Wert ergibt
+fn velocity_for(dmx: u8) -> u8 {
+    ((dmx as f32 * 127.0 / 255.0).round() as u8).clamp(1, 127)
+}
+
+/// Frequenz-Eingabe in der gewählten Einheit; intern immer Hz
+fn freq_drag(ui: &mut egui::Ui, hz: &mut f32, bpm: bool) -> egui::Response {
+    if bpm {
+        let mut v = *hz * 60.0;
+        let r = ui.add(egui::DragValue::new(&mut v).range(6.0..=6000.0).speed(1.0).suffix(" BPM"));
+        if r.changed() {
+            *hz = v / 60.0;
+        }
+        r
+    } else {
+        ui.add(egui::DragValue::new(hz).range(0.1..=100.0).speed(0.1).suffix(" Hz"))
     }
 }
 
@@ -391,7 +431,8 @@ fn tab_bar(ui: &mut egui::Ui, st: &mut UiState) {
 // Live
 // ---------------------------------------------------------------------------
 
-fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
+fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32, st: &mut UiState) {
+    let bpm = st.bpm;
     for m in show.messages.iter().filter(|m| m.level != Level::Info) {
         match m.level {
             Level::Error => ui.colored_label(RED, format!("Fehler: {}", m.text)),
@@ -437,7 +478,7 @@ fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
                     ui.painter().text(
                         rect.right_bottom() - egui::vec2(3.0, 2.0),
                         egui::Align2::RIGHT_BOTTOM,
-                        format!("{hz:.0} Hz"),
+                        freq_text(hz, bpm),
                         egui::FontId::proportional(11.0 * scale),
                         Color32::from_rgb(240, 240, 240),
                     );
@@ -504,7 +545,7 @@ fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
                                 }
                             }
                             let out = vals[c];
-                            ui.label(ch.cap_at(out).map(|cap| cap.describe(out)).unwrap_or_default());
+                            ui.label(ch.cap_at(out).map(|cap| describe_cap(cap, out, bpm)).unwrap_or_default());
                             ui.label(
                                 RichText::new(match show.midi_for(f.universe, slot) {
                                     Some((mc, n)) => {
@@ -515,6 +556,54 @@ fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
                                 .weak(),
                             );
                             ui.end_row();
+
+                            // Strobe-Rechner: Wunschfrequenz → DMX-Wert / Velocity
+                            let strobe_caps: Vec<&Capability> = ch
+                                .caps
+                                .iter()
+                                .filter(|k| matches!(k.effect, Effect::Strobe { .. }))
+                                .collect();
+                            if !strobe_caps.is_empty() {
+                                let target = st.strobe_target.entry((i, c)).or_insert(8.0);
+                                ui.label("");
+                                ui.label(RichText::new("Wunschfrequenz").weak());
+                                freq_drag(ui, target, bpm);
+                                let hit = strobe_caps.iter().find_map(|k| k.value_for_hz(*target));
+                                match hit {
+                                    Some(dmx) => {
+                                        let vel = velocity_for(dmx);
+                                        // Velocity hat nur 128 Stufen → tatsächliche Frequenz zeigen
+                                        let dmx_from_vel = shared::to_dmx(vel as f32 / 127.0);
+                                        let real = strobe_caps
+                                            .iter()
+                                            .find_map(|k| k.strobe_hz(dmx_from_vel).filter(|_| k.cap_contains(dmx_from_vel)))
+                                            .map(|hz| format!(" (≈ {})", freq_text(hz, bpm)))
+                                            .unwrap_or_default();
+                                        ui.label(format!("→ DMX {dmx}"));
+                                        ui.label(RichText::new(format!("Velocity {vel}{real}")).strong());
+                                        if let Some(b) = buf {
+                                            if ui.button("setzen").clicked() {
+                                                shared.set_manual(b, slot, dmx);
+                                            }
+                                        } else {
+                                            ui.label("");
+                                        }
+                                    }
+                                    None => {
+                                        let (lo, hi) = strobe_caps.iter().fold((f32::MAX, 0f32), |(lo, hi), k| match k.effect {
+                                            Effect::Strobe { from, to, .. } => (lo.min(from.min(to)), hi.max(from.max(to))),
+                                            _ => (lo, hi),
+                                        });
+                                        ui.colored_label(
+                                            YELLOW,
+                                            format!("außerhalb ({}–{})", freq_text(lo, bpm), freq_text(hi, bpm)),
+                                        );
+                                        ui.label("");
+                                        ui.label("");
+                                    }
+                                }
+                                ui.end_row();
+                            }
                         }
                     });
                 });
@@ -832,6 +921,7 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
         return;
     }
 
+    let bpm = st.bpm;
     let Some(fx) = st.fx_edit.as_mut() else { return };
     let dirty = fx.dirty();
     let mut save = false;
@@ -896,7 +986,7 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
                 }
             });
             if fx.open_caps[c] {
-                ui.indent("caps", |ui| caps_editor(ui, &mut fx.channels[c]));
+                ui.indent("caps", |ui| caps_editor(ui, &mut fx.channels[c], bpm));
             }
         });
     }
@@ -986,7 +1076,7 @@ fn effect_from_index(i: usize, old: &Effect) -> Effect {
     }
 }
 
-fn caps_editor(ui: &mut egui::Ui, ch: &mut FixtureChannel) {
+fn caps_editor(ui: &mut egui::Ui, ch: &mut FixtureChannel, bpm: bool) {
     let mut remove: Option<usize> = None;
     for (k, cap) in ch.caps.iter_mut().enumerate() {
         ui.push_id(("cap", k), |ui| {
@@ -1007,9 +1097,9 @@ fn caps_editor(ui: &mut egui::Ui, ch: &mut FixtureChannel) {
                 }
                 match &mut cap.effect {
                     Effect::Strobe { from, to, .. } => {
-                        ui.add(egui::DragValue::new(from).range(0.1..=100.0).speed(0.1).suffix(" Hz"));
+                        freq_drag(ui, from, bpm);
                         ui.label("→");
-                        ui.add(egui::DragValue::new(to).range(0.1..=100.0).speed(0.1).suffix(" Hz"));
+                        freq_drag(ui, to, bpm);
                     }
                     Effect::Color(a, b) => {
                         ui.color_edit_button_srgb(a);
@@ -1361,6 +1451,19 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
                 *s = scale;
             }
         }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Frequenzen als");
+        let mut bpm = st.bpm;
+        let a = ui.radio_value(&mut bpm, false, "Hz").changed();
+        let b = ui.radio_value(&mut bpm, true, "BPM").changed();
+        if a || b {
+            if let Ok(mut v) = params.freq_bpm.write() {
+                *v = bpm;
+            }
+            st.bpm = bpm;
+        }
+        ui.label(RichText::new("(1 Hz = 60 BPM; Dateien speichern immer Hz)").weak().small());
     });
     ui.label(
         RichText::new("Fenstergröße: an der unteren rechten Ecke des Plugin-Fensters ziehen.")

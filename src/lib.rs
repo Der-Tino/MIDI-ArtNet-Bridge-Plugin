@@ -41,6 +41,10 @@ pub struct BridgeParams {
     #[persist = "ui-scale"]
     pub ui_scale: RwLock<f32>,
 
+    /// Frequenzen in BPM statt Hz anzeigen/eingeben
+    #[persist = "freq-bpm"]
+    pub freq_bpm: RwLock<bool>,
+
     /// wirkt auf alle Dimmer-/Farbkanäle, automatisierbar
     #[id = "master"]
     pub master: FloatParam,
@@ -59,6 +63,7 @@ impl Default for BridgeParams {
             editor_state: EguiState::from_size(1100, 760),
             config_dir: RwLock::new(String::new()),
             ui_scale: RwLock::new(1.3),
+            freq_bpm: RwLock::new(false),
             master: FloatParam::new("Master", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))

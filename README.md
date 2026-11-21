@@ -97,7 +97,7 @@ rotation, effekt, speed, nebel, wartung, sonst`
 |----------------------|------------------------------------------------|
 | `offen`              | Licht an, kein Strobe                          |
 | `zu`                 | Shutter zu, dunkel                             |
-| `strobe 1-25`        | Strobe, über den Bereich 1 → 25 Hz             |
+| `strobe 1-25`        | Strobe, über den Bereich 1 → 25 Hz (auch `strobe 60-1500 bpm`) |
 | `zufall 1-20`        | Zufalls-Strobe                                 |
 | `farbe #ff8000`      | Farbe auf Farbrad/Makro (auch `farbe rot`)     |
 | `farbe rot grün`     | geteilte Farbe                                 |
@@ -164,6 +164,8 @@ jeweils als `.bak`). Handbearbeitung bleibt möglich.
   Strobe blinkt mit der eingestellten Frequenz, die Hz-Zahl steht in der Kachel.
   Shutter „zu“ wird dunkel dargestellt. Die Vorschau ist eine Annäherung: Ab etwa
   20 Hz kommt die Bildrate der GUI nicht mehr ganz mit.
+- **Hz oder BPM:** unter Einstellungen umschaltbar. An jedem Strobe-Kanal gibt es einen
+  Rechner: Wunschfrequenz eingeben → passender DMX-Wert und die MIDI-Velocity für Reaper.
 - **Geräte & Fader:** pro Kanal ein Fader zum Testen, dazu die aktuelle Funktion
   („Strobe · 12.6 Hz“, „Farbrad: Rot“) und die MIDI-Note. Ein Fader-Wert gilt bis zum
   nächsten MIDI-Event auf diesem Kanal. „Alle auf Ruhewert“ setzt alles zurück.

@@ -225,6 +225,26 @@ impl Capability {
         Some(from + (to - from) * t.clamp(0.0, 1.0))
     }
 
+    pub fn cap_contains(&self, v: u8) -> bool {
+        v >= self.min && v <= self.max
+    }
+
+    /// DMX-Wert für eine Wunschfrequenz (None, wenn außerhalb des Bereichs)
+    pub fn value_for_hz(&self, hz: f32) -> Option<u8> {
+        let Effect::Strobe { from, to, .. } = self.effect else {
+            return None;
+        };
+        let (lo, hi) = (from.min(to), from.max(to));
+        if hz < lo - 1e-3 || hz > hi + 1e-3 {
+            return None;
+        }
+        if (to - from).abs() < 1e-6 || self.max == self.min {
+            return Some(self.min);
+        }
+        let t = ((hz - from) / (to - from)).clamp(0.0, 1.0);
+        Some((self.min as f32 + t * (self.max - self.min) as f32).round() as u8)
+    }
+
     pub fn describe(&self, v: u8) -> String {
         match self.strobe_hz(v) {
             Some(hz) => format!("{} · {hz:.1} Hz", self.label),
@@ -328,17 +348,20 @@ fn parse_effect(s: &str) -> Result<Effect, String> {
         "zu" | "geschlossen" | "closed" | "blackout" => Effect::Closed,
         "strobe" | "strobo" | "puls" | "pulse" | "zufall" | "random" => {
             let random = matches!(word, "zufall" | "random");
-            let joined = rest.join(" ").replace("hz", " ").replace(',', ".");
+            let raw = rest.join(" ");
+            let per_minute = raw.contains("bpm");
+            let joined = raw.replace("bpm", " ").replace("hz", " ").replace(',', ".");
             let nums: Result<Vec<f32>, _> = joined
                 .split(|c: char| c.is_whitespace() || c == '-' || c == '–')
                 .filter(|s| !s.is_empty())
                 .map(str::parse::<f32>)
                 .collect();
             let nums = nums.map_err(|_| format!("'{s}': Hz-Angabe unverständlich"))?;
+            let k = if per_minute { 1.0 / 60.0 } else { 1.0 };
             let (from, to) = match nums.as_slice() {
                 [] => DEFAULT_STROBE,
-                [a] => (*a, *a),
-                [a, b, ..] => (*a, *b),
+                [a] => (*a * k, *a * k),
+                [a, b, ..] => (*a * k, *b * k),
             };
             Effect::Strobe { from, to, random }
         }

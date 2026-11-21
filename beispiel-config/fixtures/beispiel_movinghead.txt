@@ -1,0 +1,38 @@
+# Beispiel für "alles andere": Moving Head mit Farbrad, Gobo, Prisma …
+# Nur als Vorlage – nicht gepatcht.
+
+name = Beispiel Moving Head 12ch
+
+1  | pan            | Pan        | 128
+2  | pan_fein       | Pan fein
+3  | tilt           | Tilt       | 128
+4  | tilt_fein      | Tilt fein
+5  | pt_speed       | Bewegungs-Speed
+6  | farbrad        | Farbrad
+   0-9     | farbe weiß          | Weiß
+   10-19   | farbe rot           | Rot
+   20-29   | farbe #ff8000       | Orange
+   30-39   | farbe grün          | Grün
+   40-49   | farbe rot grün      | Rot/Grün (geteilt)
+   50-127  | farbe blau          | Blau
+   128-255 | Farbrad-Rotation
+7  | gobo           | Gobo
+   0-7     | aus                 | offen
+   8-15    | Gobo 1
+   16-23   | Gobo 2
+   24-255  | Gobo-Shake
+8  | gobo_rotation  | Gobo-Rotation
+9  | prisma         | Prisma
+   0-127   | aus                 | kein Prisma
+   128-255 | Prisma 3-fach
+10 | strobe         | Shutter
+   0-7     | zu                  | Shutter zu
+   8-15    | offen               | Shutter offen
+   16-131  | strobe 1-20         | Strobe
+   132-139 | offen               | offen
+   140-181 | zufall 1-20         | Zufalls-Strobe
+   182-255 | offen
+11 | dimmer         | Dimmer
+12 | wartung        | Reset
+   0-199   | aus
+   200-255 | Reset (3 s halten)

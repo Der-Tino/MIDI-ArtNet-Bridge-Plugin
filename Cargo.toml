@@ -1,0 +1,19 @@
+[package]
+name = "dmx_bridge"
+version = "0.3.0"
+edition = "2021"
+description = "MIDI-Noten → DMX über Art-Net, als CLAP/VST3 für Reaper"
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

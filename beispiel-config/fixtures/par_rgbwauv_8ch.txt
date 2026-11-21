@@ -1,0 +1,15 @@
+# Typischer China-LED-PAR RGBWA+UV, 8 Kanäle
+# Strobe laut Datenblatt 1–25 Hz. Schwelle (hier 10) am Gerät prüfen!
+
+name = PAR RGBWAUV 8ch
+
+1 | dimmer | Dimmer | 255
+2 | rot    | Rot
+3 | grün   | Grün
+4 | blau   | Blau
+5 | weiß   | Weiß
+6 | amber  | Amber
+7 | uv     | UV
+8 | strobe | Strobe
+  0-9    | offen       | kein Strobe
+  10-255 | strobe 1-25 | Strobe 1–25 Hz

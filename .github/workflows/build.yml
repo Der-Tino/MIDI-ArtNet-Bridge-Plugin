@@ -1,0 +1,83 @@
+# Baut DMX Bridge für Windows, macOS (Universal: Intel + Apple Silicon) und Linux.
+#
+# Auslöser:
+#   - Push auf main          → Builds als Download unter "Actions" → Lauf → "Artifacts"
+#   - Tag v* (z. B. v0.3.0)   → zusätzlich GitHub-Release mit allen ZIPs
+#   - manuell                 → Actions → "Build" → "Run workflow"
+
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # nötig, um Releases anzulegen
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            cmd: cargo xtask bundle dmx_bridge --release
+          - name: macos-universal
+            os: macos-latest
+            cmd: cargo xtask bundle-universal dmx_bridge --release
+          - name: linux
+            os: ubuntu-22.04
+            cmd: cargo xtask bundle dmx_bridge --release
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux-Abhängigkeiten
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgl-dev libjack-dev \
+            libx11-xcb-dev libxcb1-dev libxcb-dri2-0-dev libxcb-icccm4-dev \
+            libxcursor-dev libxkbcommon-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Rust installieren
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'x86_64-apple-darwin,aarch64-apple-darwin' || '' }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Bauen
+        run: ${{ matrix.cmd }}
+
+      - name: ZIP packen
+        shell: bash
+        run: |
+          cd target/bundled
+          ZIP="DMX-Bridge-${{ matrix.name }}.zip"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip "../../$ZIP" ./*
+          else
+            zip -r -y "../../$ZIP" ./*
+          fi
+
+      - name: Als Artifact hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: DMX-Bridge-${{ matrix.name }}
+          path: DMX-Bridge-${{ matrix.name }}.zip
+
+      - name: Release (nur bei Tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DMX-Bridge-${{ matrix.name }}.zip

@@ -1,0 +1,7 @@
+# Generischer RGBW-PAR, 4 Kanäle (kein eigener Dimmer)
+name = RGBW PAR 4ch
+
+1 | rot  | Rot
+2 | grün | Grün
+3 | blau | Blau
+4 | weiß | Weiß

@@ -1,0 +1,1163 @@
+//! Textdatei-basiertes Fixture-Management.
+//!
+//! Ordnerstruktur (Standard: Dokumente/DMX-Bridge):
+//!   config.txt          Art-Net-Ziel, MIDI-Kanal → Universum/Block
+//!   patch.txt           Name | Fixture | Universum | Adresse | [Modus] [anzahl=n]
+//!   fixtures/*.txt      eigenes Textformat (ein Typ pro Datei)
+//!   fixtures/*.qxf      QLC+-Fixture-Definitionen, direkt importiert
+//!
+//! Der Parser ist absichtlich tolerant: unbekannte Schlüssel und zusätzliche
+//! Spalten werden ignoriert (Aufwärtskompatibilität), Fehler landen als
+//! Meldung in der GUI, statt das Plugin abstürzen zu lassen.
+
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::hash::{Hash, Hasher};
+use std::net::Ipv4Addr;
+use std::path::{Path, PathBuf};
+
+use crate::qxf;
+
+pub const BLOCK_SIZE: usize = 128;
+pub const DMX_SIZE: usize = 512;
+pub const MAX_UNIVERSE: u16 = 0x7FFF;
+/// Strobe-Bereich, wenn nichts angegeben ist (typische China-PARs: 1–25 Hz)
+pub const DEFAULT_STROBE: (f32, f32) = (1.0, 25.0);
+
+pub type Rgb = [u8; 3];
+
+const EXAMPLES: &[(&str, &str)] = &[
+    ("config.txt", include_str!("../beispiel-config/config.txt")),
+    ("patch.txt", include_str!("../beispiel-config/patch.txt")),
+    (
+        "fixtures/uking_wash_8ch.txt",
+        include_str!("../beispiel-config/fixtures/uking_wash_8ch.txt"),
+    ),
+    (
+        "fixtures/par_rgbwauv_8ch.txt",
+        include_str!("../beispiel-config/fixtures/par_rgbwauv_8ch.txt"),
+    ),
+    (
+        "fixtures/rgbw_4ch.txt",
+        include_str!("../beispiel-config/fixtures/rgbw_4ch.txt"),
+    ),
+    (
+        "fixtures/dimmer_1ch.txt",
+        include_str!("../beispiel-config/fixtures/dimmer_1ch.txt"),
+    ),
+    (
+        "fixtures/beispiel_movinghead.txt",
+        include_str!("../beispiel-config/fixtures/beispiel_movinghead.txt"),
+    ),
+];
+
+// ---------------------------------------------------------------------------
+// Kanaltypen
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChanKind {
+    Dimmer,
+    DimmerFine,
+    Red,
+    Green,
+    Blue,
+    White,
+    Amber,
+    Uv,
+    Lime,
+    Indigo,
+    Cyan,
+    Magenta,
+    Yellow,
+    ColorWheel,
+    ColorMacro,
+    Cto,
+    Shutter,
+    Pan,
+    PanFine,
+    Tilt,
+    TiltFine,
+    PanTiltSpeed,
+    Gobo,
+    GoboRotation,
+    Prism,
+    PrismRotation,
+    Focus,
+    Zoom,
+    Iris,
+    Frost,
+    Rotation,
+    Effect,
+    EffectSpeed,
+    Fog,
+    Maintenance,
+    Other,
+}
+
+use ChanKind as K;
+
+/// (Typ, Anzeige, Schlüsselwörter in der Datei – das erste ist das "offizielle")
+const KIND_TABLE: &[(ChanKind, &str, &[&str])] = &[
+    (K::Dimmer, "Dimmer", &["dimmer", "master", "intensity", "intensität", "helligkeit"]),
+    (K::DimmerFine, "Dimmer fein", &["dimmer_fein", "dimmer_fine"]),
+    (K::Red, "Rot", &["rot", "red", "r"]),
+    (K::Green, "Grün", &["grün", "gruen", "green", "g"]),
+    (K::Blue, "Blau", &["blau", "blue", "b"]),
+    (K::White, "Weiß", &["weiß", "weiss", "white", "w"]),
+    (K::Amber, "Amber", &["amber", "a"]),
+    (K::Uv, "UV", &["uv", "u"]),
+    (K::Lime, "Lime", &["lime"]),
+    (K::Indigo, "Indigo", &["indigo"]),
+    (K::Cyan, "Cyan", &["cyan", "c"]),
+    (K::Magenta, "Magenta", &["magenta", "m"]),
+    (K::Yellow, "Gelb", &["gelb", "yellow", "y"]),
+    (K::ColorWheel, "Farbrad", &["farbrad", "colorwheel", "color_wheel"]),
+    (K::ColorMacro, "Farbmakro", &["farbmakro", "colormacro", "color_macro"]),
+    (K::Cto, "Farbtemperatur", &["cto", "farbtemperatur", "ctc", "ctb"]),
+    (K::Shutter, "Strobe/Shutter", &["strobe", "strobo", "shutter", "blitz"]),
+    (K::Pan, "Pan", &["pan"]),
+    (K::PanFine, "Pan fein", &["pan_fein", "pan_fine"]),
+    (K::Tilt, "Tilt", &["tilt"]),
+    (K::TiltFine, "Tilt fein", &["tilt_fein", "tilt_fine"]),
+    (K::PanTiltSpeed, "Pan/Tilt-Speed", &["pt_speed", "pan_tilt_speed", "bewegung_speed"]),
+    (K::Gobo, "Gobo", &["gobo"]),
+    (K::GoboRotation, "Gobo-Rotation", &["gobo_rotation", "goborotation"]),
+    (K::Prism, "Prisma", &["prisma", "prism"]),
+    (K::PrismRotation, "Prisma-Rotation", &["prisma_rotation", "prism_rotation"]),
+    (K::Focus, "Fokus", &["fokus", "focus"]),
+    (K::Zoom, "Zoom", &["zoom"]),
+    (K::Iris, "Iris", &["iris"]),
+    (K::Frost, "Frost", &["frost"]),
+    (K::Rotation, "Rotation", &["rotation", "drehung"]),
+    (K::Effect, "Effekt/Programm", &["effekt", "effect", "programm", "program", "makro", "macro", "modus"]),
+    (K::EffectSpeed, "Speed", &["speed", "geschwindigkeit", "effekt_speed"]),
+    (K::Fog, "Nebel", &["nebel", "fog", "haze", "hazer"]),
+    (K::Maintenance, "Wartung", &["wartung", "maintenance", "reset"]),
+    (K::Other, "Sonst", &["sonst", "other", "sonstiges", "nichts", "-"]),
+];
+
+impl ChanKind {
+    pub fn parse(s: &str) -> Option<Self> {
+        let l = s.trim().to_lowercase();
+        KIND_TABLE
+            .iter()
+            .find(|(_, _, keys)| keys.contains(&l.as_str()))
+            .map(|(k, _, _)| *k)
+    }
+
+    pub fn label(self) -> &'static str {
+        KIND_TABLE
+            .iter()
+            .find(|(k, _, _)| *k == self)
+            .map(|(_, l, _)| *l)
+            .unwrap_or("?")
+    }
+
+    pub fn keyword_list() -> String {
+        KIND_TABLE
+            .iter()
+            .map(|(_, _, keys)| keys[0])
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Additive Lichtfarben (für Vorschau und Master ohne Dimmerkanal)
+    pub fn is_additive(self) -> bool {
+        matches!(
+            self,
+            K::Red | K::Green | K::Blue | K::White | K::Amber | K::Uv | K::Lime | K::Indigo
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Capabilities (Wertebereiche pro Kanal, wie bei QLC+)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Effect {
+    /// keine Funktion / nur Beschriftung
+    Nothing,
+    /// Shutter offen, Licht an (kein Strobe)
+    Open,
+    /// Shutter zu, dunkel
+    Closed,
+    /// Strobe von `from` bis `to` Hz über den Bereich
+    Strobe { from: f32, to: f32, random: bool },
+    /// Farbe auf Farbrad/Makro (zweite Farbe = geteiltes Rad)
+    Color(Rgb, Option<Rgb>),
+    /// freie Funktion (Gobo 3, Auto-Programm …)
+    Text,
+}
+
+#[derive(Clone, Debug)]
+pub struct Capability {
+    pub min: u8,
+    pub max: u8,
+    pub effect: Effect,
+    pub label: String,
+}
+
+impl Capability {
+    pub fn strobe_hz(&self, v: u8) -> Option<f32> {
+        let Effect::Strobe { from, to, .. } = self.effect else {
+            return None;
+        };
+        if self.max <= self.min {
+            return Some(from);
+        }
+        let t = v.saturating_sub(self.min) as f32 / (self.max - self.min) as f32;
+        Some(from + (to - from) * t.clamp(0.0, 1.0))
+    }
+
+    pub fn describe(&self, v: u8) -> String {
+        match self.strobe_hz(v) {
+            Some(hz) => format!("{} · {hz:.1} Hz", self.label),
+            None => self.label.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FixtureChannel {
+    pub kind: ChanKind,
+    pub label: String,
+    pub rest: u8,
+    pub caps: Vec<Capability>,
+}
+
+impl FixtureChannel {
+    pub fn cap_at(&self, v: u8) -> Option<&Capability> {
+        self.caps.iter().find(|c| v >= c.min && v <= c.max)
+    }
+}
+
+/// Standard für Strobe-Kanäle ohne eigene Bereiche: 0–9 offen, 10–255 = 1–25 Hz
+pub fn default_shutter_caps() -> Vec<Capability> {
+    vec![
+        Capability {
+            min: 0,
+            max: 9,
+            effect: Effect::Open,
+            label: "offen".into(),
+        },
+        Capability {
+            min: 10,
+            max: 255,
+            effect: Effect::Strobe {
+                from: DEFAULT_STROBE.0,
+                to: DEFAULT_STROBE.1,
+                random: false,
+            },
+            label: "Strobe".into(),
+        },
+    ]
+}
+
+pub(crate) fn finalize_channel(ch: &mut FixtureChannel) {
+    if ch.kind == ChanKind::Shutter && ch.caps.is_empty() {
+        ch.caps = default_shutter_caps();
+    }
+    ch.caps.sort_by_key(|c| c.min);
+}
+
+/// "#ff8800", "ff8800" oder ein Farbname
+pub fn parse_color(s: &str) -> Option<Rgb> {
+    let l = s.trim().to_lowercase();
+    let named: Option<u32> = match l.as_str() {
+        "rot" | "red" => Some(0xff0000),
+        "grün" | "gruen" | "green" => Some(0x00ff00),
+        "blau" | "blue" => Some(0x0000ff),
+        "weiß" | "weiss" | "white" => Some(0xffffff),
+        "gelb" | "yellow" => Some(0xffff00),
+        "cyan" => Some(0x00ffff),
+        "magenta" => Some(0xff00ff),
+        "orange" => Some(0xff8000),
+        "pink" => Some(0xff69b4),
+        "lila" | "violett" | "purple" => Some(0x8000ff),
+        "amber" => Some(0xffbf00),
+        "uv" => Some(0x6a00ff),
+        "warmweiß" | "warmweiss" | "warmwhite" => Some(0xffd8a8),
+        "kaltweiß" | "kaltweiss" | "coldwhite" => Some(0xe8f0ff),
+        _ => None,
+    };
+    let v = match named {
+        Some(v) => v,
+        None => {
+            let hex = l.trim_start_matches('#');
+            if hex.len() != 6 {
+                return None;
+            }
+            u32::from_str_radix(hex, 16).ok()?
+        }
+    };
+    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
+}
+
+fn parse_range(s: &str) -> Option<(u8, u8)> {
+    let (a, b) = s.split_once('-')?;
+    let a: u8 = a.trim().parse().ok()?;
+    let b: u8 = b.trim().parse().ok()?;
+    (a <= b).then_some((a, b))
+}
+
+/// "offen", "zu", "strobe 1-25", "zufall 5-20", "farbe #ff0000 [#00ff00]", sonst Text
+fn parse_effect(s: &str) -> Result<Effect, String> {
+    let l = s.trim().to_lowercase();
+    let mut it = l.split_whitespace();
+    let word = it.next().unwrap_or("");
+    let rest: Vec<&str> = it.collect();
+    Ok(match word {
+        "" | "aus" | "nichts" | "-" | "none" | "keine" => Effect::Nothing,
+        "offen" | "open" | "an" | "on" => Effect::Open,
+        "zu" | "geschlossen" | "closed" | "blackout" => Effect::Closed,
+        "strobe" | "strobo" | "puls" | "pulse" | "zufall" | "random" => {
+            let random = matches!(word, "zufall" | "random");
+            let joined = rest.join(" ").replace("hz", " ").replace(',', ".");
+            let nums: Result<Vec<f32>, _> = joined
+                .split(|c: char| c.is_whitespace() || c == '-' || c == '–')
+                .filter(|s| !s.is_empty())
+                .map(str::parse::<f32>)
+                .collect();
+            let nums = nums.map_err(|_| format!("'{s}': Hz-Angabe unverständlich"))?;
+            let (from, to) = match nums.as_slice() {
+                [] => DEFAULT_STROBE,
+                [a] => (*a, *a),
+                [a, b, ..] => (*a, *b),
+            };
+            Effect::Strobe { from, to, random }
+        }
+        "farbe" | "color" | "colour" => {
+            let cols: Vec<Rgb> = rest.iter().filter_map(|c| parse_color(c)).collect();
+            match cols.as_slice() {
+                [] => return Err(format!("'{s}': Farbe als #rrggbb oder Name angeben")),
+                [a] => Effect::Color(*a, None),
+                [a, b, ..] => Effect::Color(*a, Some(*b)),
+            }
+        }
+        _ => Effect::Text,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures und Patch
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct FixtureMode {
+    pub name: String,
+    pub channels: Vec<FixtureChannel>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FixtureType {
+    pub id: String,
+    pub name: String,
+    pub modes: Vec<FixtureMode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PatchedFixture {
+    pub name: String,
+    pub type_id: String,
+    pub type_name: String,
+    pub mode_name: String,
+    pub universe: u16,
+    /// 1-basiert, wie auf dem Gerät eingestellt
+    pub address: u16,
+    pub channels: Vec<FixtureChannel>,
+    pub has_dimmer: bool,
+}
+
+impl PatchedFixture {
+    /// 0-basierter Slot des Kanals `c` im Universum
+    pub fn slot(&self, c: usize) -> usize {
+        self.address as usize - 1 + c
+    }
+
+    /// Master/Blackout: Hat das Gerät einen Dimmer, wird nur der gedimmt
+    /// (Farben bleiben sauber), sonst die additiven Farbkanäle.
+    pub fn master_affects(&self, c: usize) -> bool {
+        let k = self.channels[c].kind;
+        if self.has_dimmer {
+            k == ChanKind::Dimmer
+        } else {
+            k.is_additive()
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MidiTarget {
+    pub universe: u16,
+    /// 0..=3
+    pub block: u8,
+}
+
+impl MidiTarget {
+    pub fn first_slot(&self) -> usize {
+        self.block as usize * BLOCK_SIZE
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Clone, Debug)]
+pub struct Message {
+    pub level: Level,
+    pub text: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Show {
+    pub dir: PathBuf,
+    pub artnet_ip: Ipv4Addr,
+    pub artnet_port: u16,
+    pub refresh_hz: f32,
+    pub cc_input: bool,
+    pub midi: [Option<MidiTarget>; 16],
+    pub fixtures: Vec<PatchedFixture>,
+    pub messages: Vec<Message>,
+    /// Universum → 512 Slots → (Fixture-Index, Kanal-Index)
+    slots: HashMap<u16, Vec<Option<(usize, usize)>>>,
+}
+
+impl Show {
+    fn empty(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            artnet_ip: Ipv4Addr::BROADCAST,
+            artnet_port: 6454,
+            refresh_hz: 40.0,
+            cc_input: true,
+            midi: default_midi_map(),
+            fixtures: Vec::new(),
+            messages: Vec::new(),
+            slots: HashMap::new(),
+        }
+    }
+
+    fn msg(&mut self, level: Level, text: impl Into<String>) {
+        self.messages.push(Message {
+            level,
+            text: text.into(),
+        });
+    }
+
+    /// (Ruhewert, Master wirkt) für einen 0-basierten Slot
+    pub fn slot_info(&self, universe: u16, slot: usize) -> (u8, bool) {
+        match self.lookup_idx(universe, slot) {
+            Some((f, c)) => {
+                let fx = &self.fixtures[f];
+                (fx.channels[c].rest, fx.master_affects(c))
+            }
+            None => (0, false),
+        }
+    }
+
+    fn lookup_idx(&self, universe: u16, slot: usize) -> Option<(usize, usize)> {
+        self.slots.get(&universe)?.get(slot).copied().flatten()
+    }
+
+    pub fn lookup(&self, universe: u16, slot: usize) -> Option<(&PatchedFixture, &FixtureChannel)> {
+        let (f, c) = self.lookup_idx(universe, slot)?;
+        let fx = self.fixtures.get(f)?;
+        Some((fx, fx.channels.get(c)?))
+    }
+
+    /// Welche MIDI-Kanal/Note-Kombination steuert diesen Slot? (Kanal 0-basiert)
+    pub fn midi_for(&self, universe: u16, slot: usize) -> Option<(u8, u8)> {
+        self.midi.iter().enumerate().find_map(|(ch, t)| match t {
+            Some(t) if t.universe == universe && t.block as usize == slot / BLOCK_SIZE => {
+                Some((ch as u8, (slot % BLOCK_SIZE) as u8))
+            }
+            _ => None,
+        })
+    }
+
+    pub fn error_count(&self) -> usize {
+        self.messages.iter().filter(|m| m.level == Level::Error).count()
+    }
+}
+
+pub fn default_midi_map() -> [Option<MidiTarget>; 16] {
+    let mut m = [None; 16];
+    for (ch, slot) in m.iter_mut().enumerate().take(8) {
+        *slot = Some(MidiTarget {
+            universe: (ch / 4) as u16,
+            block: (ch % 4) as u8,
+        });
+    }
+    m
+}
+
+/// MIDI-Notenname, Reaper-Standard (Note 60 = C4)
+pub fn note_name(n: u8) -> String {
+    const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    format!("{}{}", NAMES[n as usize % 12], n as i32 / 12 - 1)
+}
+
+pub fn default_config_dir() -> PathBuf {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join("Documents").join("DMX-Bridge")
+}
+
+// ---------------------------------------------------------------------------
+// Laden
+// ---------------------------------------------------------------------------
+
+/// Lädt den kompletten Show-Ordner. Schlägt nie fehl – Probleme landen in
+/// `show.messages`, im Zweifel gelten Standardwerte.
+pub fn load_show(dir: &Path) -> Show {
+    let mut show = Show::empty(dir.to_path_buf());
+
+    if !dir.exists() {
+        match write_examples(dir) {
+            Ok(()) => show.msg(Level::Info, "Konfig-Ordner war leer – Beispieldateien angelegt."),
+            Err(e) => {
+                show.msg(
+                    Level::Error,
+                    format!("Konnte Ordner {} nicht anlegen: {e}", dir.display()),
+                );
+                return show;
+            }
+        }
+    }
+
+    match read_text(&dir.join("config.txt")) {
+        Ok(t) => parse_config(&mut show, &t),
+        Err(e) => show.msg(Level::Warn, format!("config.txt: {e} – Standardwerte aktiv")),
+    }
+
+    let types = load_fixture_types(&mut show, &dir.join("fixtures"));
+
+    match read_text(&dir.join("patch.txt")) {
+        Ok(t) => parse_patch(&mut show, &t, &types),
+        Err(e) => show.msg(Level::Warn, format!("patch.txt: {e} – nichts gepatcht")),
+    }
+
+    validate(&mut show);
+    let info = format!(
+        "{} Fixture-Typen, {} Geräte gepatcht",
+        types.len(),
+        show.fixtures.len()
+    );
+    show.msg(Level::Info, info);
+    show
+}
+
+/// Billiger Fingerabdruck (Größe + Änderungszeit) aller relevanten Dateien,
+/// damit gespeicherte Änderungen automatisch neu geladen werden.
+pub fn fingerprint(dir: &Path) -> u64 {
+    fn meta(p: &Path, h: &mut DefaultHasher) {
+        match fs::metadata(p) {
+            Ok(m) => {
+                m.len().hash(h);
+                if let Ok(t) = m.modified() {
+                    t.hash(h);
+                }
+            }
+            Err(_) => 0u8.hash(h),
+        }
+    }
+    let mut h = DefaultHasher::new();
+    dir.hash(&mut h);
+    meta(&dir.join("config.txt"), &mut h);
+    meta(&dir.join("patch.txt"), &mut h);
+    if let Ok(rd) = fs::read_dir(dir.join("fixtures")) {
+        let mut paths: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        paths.sort();
+        for p in paths {
+            p.hash(&mut h);
+            meta(&p, &mut h);
+        }
+    }
+    h.finish()
+}
+
+fn write_examples(dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir.join("fixtures"))?;
+    for (rel, content) in EXAMPLES {
+        let p = dir.join(rel);
+        if !p.exists() {
+            fs::write(p, content)?;
+        }
+    }
+    Ok(())
+}
+
+/// UTF-8 (mit/ohne BOM), Fallback Latin-1 für alte Windows-Editoren.
+fn read_text(p: &Path) -> Result<String, String> {
+    let bytes = fs::read(p).map_err(|e| e.to_string())?;
+    let s = match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => e.into_bytes().iter().map(|&b| b as char).collect(),
+    };
+    Ok(s.trim_start_matches('\u{feff}').to_string())
+}
+
+/// (Zeilennummer, Inhalt ohne Kommentar), leere Zeilen übersprungen
+fn clean_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.lines()
+        .enumerate()
+        .map(|(i, l)| (i + 1, strip_comment(l).trim()))
+        .filter(|(_, l)| !l.is_empty())
+}
+
+/// '#' leitet einen Kommentar ein – außer direkt vor einer Hex-Farbe (#ff0000)
+fn strip_comment(l: &str) -> &str {
+    let b = l.as_bytes();
+    let mut i = 0;
+    while let Some(p) = l[i..].find('#') {
+        let pos = i + p;
+        let hex = b.len() >= pos + 7
+            && b[pos + 1..pos + 7].iter().all(|c| c.is_ascii_hexdigit())
+            && b.get(pos + 7).map_or(true, |c| !c.is_ascii_alphanumeric());
+        if !hex {
+            return &l[..pos];
+        }
+        i = pos + 1;
+    }
+    l
+}
+
+fn parse_bool(v: &str) -> Option<bool> {
+    match v.trim().to_lowercase().as_str() {
+        "an" | "on" | "ja" | "yes" | "true" | "1" => Some(true),
+        "aus" | "off" | "nein" | "no" | "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_target(v: &str) -> Result<Option<MidiTarget>, String> {
+    let l = v.trim().to_lowercase();
+    if matches!(l.as_str(), "aus" | "off" | "-" | "none") {
+        return Ok(None);
+    }
+    let parts: Vec<&str> = l
+        .split(|c: char| c.is_whitespace() || matches!(c, '/' | ',' | ':' | ';'))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.len() != 2 {
+        return Err(format!("'{v}': erwartet '<universum> <block>' oder 'aus'"));
+    }
+    let universe: u16 = parts[0]
+        .trim_start_matches('u')
+        .parse()
+        .ok()
+        .filter(|u| *u <= MAX_UNIVERSE)
+        .ok_or_else(|| format!("'{}': Universum muss 0–{MAX_UNIVERSE} sein", parts[0]))?;
+    let block: u8 = parts[1]
+        .trim_start_matches('b')
+        .parse()
+        .ok()
+        .filter(|b| (1..=4).contains(b))
+        .ok_or_else(|| format!("'{}': Block muss 1–4 sein", parts[1]))?;
+    Ok(Some(MidiTarget {
+        universe,
+        block: block - 1,
+    }))
+}
+
+fn parse_config(show: &mut Show, text: &str) {
+    let mut midi = [None; 16];
+    let mut midi_seen = false;
+
+    for (ln, line) in clean_lines(text) {
+        let Some((k, v)) = line.split_once('=') else {
+            show.msg(Level::Warn, format!("config.txt Zeile {ln}: erwartet 'schlüssel = wert'"));
+            continue;
+        };
+        let key = k.trim().to_lowercase();
+        let v = v.trim();
+        match key.as_str() {
+            "format" => {}
+            "artnet_ip" | "ip" => match v.parse::<Ipv4Addr>() {
+                Ok(ip) => show.artnet_ip = ip,
+                Err(_) => show.msg(Level::Error, format!("config.txt Zeile {ln}: ungültige IP '{v}'")),
+            },
+            "artnet_port" | "port" => match v.parse::<u16>() {
+                Ok(p) if p > 0 => show.artnet_port = p,
+                _ => show.msg(Level::Error, format!("config.txt Zeile {ln}: ungültiger Port '{v}'")),
+            },
+            "refresh_hz" => match v.replace(',', ".").parse::<f32>() {
+                Ok(hz) if hz.is_finite() => show.refresh_hz = hz.clamp(1.0, 44.0),
+                _ => show.msg(Level::Error, format!("config.txt Zeile {ln}: ungültige Rate '{v}'")),
+            },
+            "cc_eingang" | "cc_input" => match parse_bool(v) {
+                Some(b) => show.cc_input = b,
+                None => show.msg(Level::Error, format!("config.txt Zeile {ln}: 'an' oder 'aus' erwartet")),
+            },
+            _ if key.starts_with("midi") => {
+                let num = key[4..].trim().trim_start_matches(['_', ' ']).parse::<usize>();
+                match num {
+                    Ok(n) if (1..=16).contains(&n) => match parse_target(v) {
+                        Ok(t) => {
+                            midi[n - 1] = t;
+                            midi_seen = true;
+                        }
+                        Err(e) => show.msg(Level::Error, format!("config.txt Zeile {ln}: {e}")),
+                    },
+                    _ => show.msg(Level::Error, format!("config.txt Zeile {ln}: MIDI-Kanal muss 1–16 sein")),
+                }
+            }
+            _ => show.msg(
+                Level::Warn,
+                format!("config.txt Zeile {ln}: unbekannter Schlüssel '{}' (ignoriert)", k.trim()),
+            ),
+        }
+    }
+
+    // Sobald irgendein midiN-Eintrag existiert, gilt nur die Datei.
+    if midi_seen {
+        show.midi = midi;
+    }
+}
+
+fn load_fixture_types(show: &mut Show, dir: &Path) -> HashMap<String, FixtureType> {
+    let mut map = HashMap::new();
+    let rd = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            show.msg(Level::Warn, format!("Ordner fixtures/ nicht lesbar: {e}"));
+            return map;
+        }
+    };
+    let mut paths: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    paths.sort();
+
+    for p in paths {
+        let ext = p
+            .extension()
+            .map(|x| x.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if ext != "txt" && ext != "qxf" {
+            continue;
+        }
+        let id = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let fname = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if map.contains_key(&id) {
+            show.msg(Level::Warn, format!("fixtures/{fname}: Name '{id}' doppelt, ignoriert"));
+            continue;
+        }
+        let text = match read_text(&p) {
+            Ok(t) => t,
+            Err(e) => {
+                show.msg(Level::Error, format!("fixtures/{fname}: {e}"));
+                continue;
+            }
+        };
+        if ext == "qxf" {
+            match qxf::parse_qxf(&id, &text) {
+                Ok((ft, warnings)) => {
+                    for w in warnings {
+                        show.msg(Level::Warn, format!("fixtures/{fname}: {w}"));
+                    }
+                    map.insert(id, ft);
+                }
+                Err(e) => show.msg(Level::Error, format!("fixtures/{fname}: {e}")),
+            }
+        } else if let Some(ft) = parse_fixture(show, &id, &fname, &text) {
+            map.insert(id, ft);
+        }
+    }
+    map
+}
+
+fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<FixtureType> {
+    let mut name = id.to_string();
+    let mut chans: Vec<Option<FixtureChannel>> = Vec::new();
+    let mut current: Option<usize> = None;
+
+    for (ln, line) in clean_lines(text) {
+        let here = |m: &str| format!("fixtures/{fname} Zeile {ln}: {m}");
+
+        if !line.contains('|') {
+            if let Some((k, v)) = line.split_once('=') {
+                if k.trim().eq_ignore_ascii_case("name") {
+                    name = v.trim().to_string();
+                }
+                // andere Schlüssel: für spätere Versionen reserviert
+                continue;
+            }
+            show.msg(Level::Warn, here("unverständlich, ignoriert"));
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split('|').map(str::trim).collect();
+
+        // --- Wertebereich für den vorigen Kanal: "10-255 | strobe 1-25 | Text"
+        if parts[0].contains('-') {
+            let Some((min, max)) = parse_range(parts[0]) else {
+                show.msg(Level::Error, here(&format!("Bereich '{}' ungültig (z. B. 10-255)", parts[0])));
+                continue;
+            };
+            let Some(ci) = current else {
+                show.msg(Level::Error, here("Bereich ohne vorherige Kanalzeile"));
+                continue;
+            };
+            let eff_str = parts.get(1).copied().unwrap_or("");
+            let effect = match parse_effect(eff_str) {
+                Ok(e) => e,
+                Err(e) => {
+                    show.msg(Level::Error, here(&e));
+                    continue;
+                }
+            };
+            let label = parts
+                .get(2)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| eff_str.to_string());
+            if let Some(Some(ch)) = chans.get_mut(ci) {
+                ch.caps.push(Capability { min, max, effect, label });
+            }
+            continue;
+        }
+
+        // --- Kanalzeile: "1 | dimmer | Dimmer | 255"
+        let n = match parts[0].parse::<usize>() {
+            Ok(n) if (1..=DMX_SIZE).contains(&n) => n,
+            _ => {
+                show.msg(Level::Error, here(&format!("Kanalnummer '{}' ungültig", parts[0])));
+                continue;
+            }
+        };
+        let kind_str = parts.get(1).copied().unwrap_or("");
+        let Some(kind) = ChanKind::parse(kind_str) else {
+            show.msg(
+                Level::Error,
+                here(&format!(
+                    "unbekannter Typ '{kind_str}' (erlaubt: {})",
+                    ChanKind::keyword_list()
+                )),
+            );
+            current = None;
+            continue;
+        };
+        let label = parts
+            .get(2)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| kind.label().to_string());
+        let rest = match parts.get(3).filter(|s| !s.is_empty()) {
+            None => 0,
+            Some(s) => s.parse::<u8>().unwrap_or_else(|_| {
+                show.msg(Level::Error, here(&format!("Ruhewert '{s}' muss 0–255 sein")));
+                0
+            }),
+        };
+
+        if chans.len() < n {
+            chans.resize(n, None);
+        }
+        if chans[n - 1].is_some() {
+            show.msg(Level::Warn, here(&format!("Kanal {n} doppelt, letzter gilt")));
+        }
+        chans[n - 1] = Some(FixtureChannel {
+            kind,
+            label,
+            rest,
+            caps: Vec::new(),
+        });
+        current = Some(n - 1);
+    }
+
+    if chans.is_empty() {
+        show.msg(Level::Error, format!("fixtures/{fname}: keine Kanäle definiert"));
+        return None;
+    }
+
+    let channels = chans
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let mut ch = c.unwrap_or_else(|| FixtureChannel {
+                kind: ChanKind::Other,
+                label: format!("Kanal {}", i + 1),
+                rest: 0,
+                caps: Vec::new(),
+            });
+            finalize_channel(&mut ch);
+            ch
+        })
+        .collect();
+
+    Some(FixtureType {
+        id: id.to_string(),
+        name,
+        modes: vec![FixtureMode {
+            name: "Standard".into(),
+            channels,
+        }],
+    })
+}
+
+fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, FixtureType>) {
+    for (ln, line) in clean_lines(text) {
+        let parts: Vec<&str> = line.split('|').map(str::trim).collect();
+        if parts.len() < 4 {
+            show.msg(
+                Level::Error,
+                format!("patch.txt Zeile {ln}: erwartet 'Name | Fixture | Universum | Adresse'"),
+            );
+            continue;
+        }
+        let tid_lower = parts[1].to_lowercase();
+        let tid = tid_lower
+            .trim_end_matches(".txt")
+            .trim_end_matches(".qxf")
+            .to_string();
+        let Some(ft) = types.get(&tid) else {
+            show.msg(
+                Level::Error,
+                format!("patch.txt Zeile {ln}: Fixture '{tid}' nicht in fixtures/ gefunden"),
+            );
+            continue;
+        };
+        let universe = match parts[2].parse::<u16>() {
+            Ok(u) if u <= MAX_UNIVERSE => u,
+            _ => {
+                show.msg(Level::Error, format!("patch.txt Zeile {ln}: Universum '{}' ungültig", parts[2]));
+                continue;
+            }
+        };
+        let address = match parts[3].parse::<usize>() {
+            Ok(a) if (1..=DMX_SIZE).contains(&a) => a,
+            _ => {
+                show.msg(Level::Error, format!("patch.txt Zeile {ln}: Adresse '{}' muss 1–512 sein", parts[3]));
+                continue;
+            }
+        };
+
+        // optionale Spalten: Modus, anzahl=n / xN, abstand=n
+        let mut mode_req: Option<String> = None;
+        let mut count = 1usize;
+        let mut spacing: Option<usize> = None;
+        for extra in parts.iter().skip(4).filter(|s| !s.is_empty()) {
+            if let Some((k, v)) = extra.split_once('=') {
+                let v = v.trim();
+                match k.trim().to_lowercase().as_str() {
+                    "modus" | "mode" => mode_req = Some(v.to_string()),
+                    "anzahl" | "count" => match v.parse::<usize>() {
+                        Ok(n) if (1..=DMX_SIZE).contains(&n) => count = n,
+                        _ => show.msg(Level::Error, format!("patch.txt Zeile {ln}: anzahl '{v}' ungültig")),
+                    },
+                    "abstand" | "spacing" => match v.parse::<usize>() {
+                        Ok(n) if (1..=DMX_SIZE).contains(&n) => spacing = Some(n),
+                        _ => show.msg(Level::Error, format!("patch.txt Zeile {ln}: abstand '{v}' ungültig")),
+                    },
+                    other => show.msg(Level::Warn, format!("patch.txt Zeile {ln}: '{other}' unbekannt (ignoriert)")),
+                }
+            } else if let Some(n) = extra
+                .strip_prefix(['x', 'X', '×'])
+                .and_then(|n| n.trim().parse::<usize>().ok())
+            {
+                count = n.clamp(1, DMX_SIZE);
+            } else {
+                mode_req = Some(extra.to_string());
+            }
+        }
+
+        let mode_list = || {
+            ft.modes
+                .iter()
+                .map(|m| format!("'{}'", m.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mode = match &mode_req {
+            Some(req) => {
+                let r = req.to_lowercase();
+                ft.modes
+                    .iter()
+                    .find(|m| m.name.to_lowercase() == r)
+                    .or_else(|| ft.modes.iter().find(|m| m.name.to_lowercase().contains(&r)))
+            }
+            None => ft.modes.first(),
+        };
+        let Some(mode) = mode else {
+            show.msg(
+                Level::Error,
+                format!(
+                    "patch.txt Zeile {ln}: Modus '{}' gibt es bei '{tid}' nicht (verfügbar: {})",
+                    mode_req.unwrap_or_default(),
+                    mode_list()
+                ),
+            );
+            continue;
+        };
+        if mode_req.is_none() && ft.modes.len() > 1 {
+            show.msg(
+                Level::Info,
+                format!(
+                    "patch.txt Zeile {ln}: '{tid}' hat mehrere Modi, nehme '{}' (verfügbar: {})",
+                    mode.name,
+                    mode_list()
+                ),
+            );
+        }
+        if mode.channels.is_empty() {
+            show.msg(Level::Error, format!("patch.txt Zeile {ln}: Modus '{}' hat keine Kanäle", mode.name));
+            continue;
+        }
+
+        let len = mode.channels.len();
+        let step = spacing.unwrap_or(len);
+        let has_dimmer = mode.channels.iter().any(|c| c.kind == ChanKind::Dimmer);
+        for i in 0..count {
+            let addr = address + i * step;
+            let last = addr + len - 1;
+            let name = if count > 1 {
+                format!("{} {}", parts[0], i + 1)
+            } else {
+                parts[0].to_string()
+            };
+            if last > DMX_SIZE {
+                show.msg(
+                    Level::Error,
+                    format!("patch.txt Zeile {ln}: '{name}' ({len} Kanäle ab {addr}) endet bei {last} > 512"),
+                );
+                break;
+            }
+            show.fixtures.push(PatchedFixture {
+                name,
+                type_id: tid.clone(),
+                type_name: ft.name.clone(),
+                mode_name: mode.name.clone(),
+                universe,
+                address: addr as u16,
+                channels: mode.channels.clone(),
+                has_dimmer,
+            });
+        }
+    }
+}
+
+fn validate(show: &mut Show) {
+    let mut slots: HashMap<u16, Vec<Option<(usize, usize)>>> = HashMap::new();
+    let mut msgs: Vec<Message> = Vec::new();
+    let mut overlap_pairs: HashSet<(usize, usize)> = HashSet::new();
+
+    for (fi, f) in show.fixtures.iter().enumerate() {
+        let row = slots.entry(f.universe).or_insert_with(|| vec![None; DMX_SIZE]);
+        for ci in 0..f.channels.len() {
+            let s = f.slot(ci);
+            match row[s] {
+                Some((other, _)) => {
+                    if overlap_pairs.insert((other, fi)) {
+                        msgs.push(Message {
+                            level: Level::Warn,
+                            text: format!(
+                                "Überschneidung: '{}' und '{}' ab U{} DMX {} (erstes Gerät gewinnt)",
+                                show.fixtures[other].name,
+                                f.name,
+                                f.universe,
+                                s + 1
+                            ),
+                        });
+                    }
+                }
+                None => row[s] = Some((fi, ci)),
+            }
+        }
+
+        let unreachable = (0..f.channels.len())
+            .filter(|&c| show.midi_for(f.universe, f.slot(c)).is_none())
+            .count();
+        if unreachable == f.channels.len() {
+            msgs.push(Message {
+                level: Level::Warn,
+                text: format!(
+                    "'{}' (U{}) hat keine MIDI-Zuordnung – Universum/Block in config.txt fehlt",
+                    f.name, f.universe
+                ),
+            });
+        } else if unreachable > 0 {
+            msgs.push(Message {
+                level: Level::Warn,
+                text: format!("'{}': {unreachable} Kanäle liegen in einem Block ohne MIDI-Kanal", f.name),
+            });
+        }
+    }
+
+    for i in 0..16 {
+        for j in (i + 1)..16 {
+            if let (Some(a), Some(b)) = (show.midi[i], show.midi[j]) {
+                if a == b {
+                    msgs.push(Message {
+                        level: Level::Warn,
+                        text: format!(
+                            "MIDI-Kanal {} und {} steuern denselben Block (U{} Block {})",
+                            i + 1,
+                            j + 1,
+                            a.universe,
+                            a.block + 1
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    show.slots = slots;
+    show.messages.extend(msgs);
+}
+
+// ---------------------------------------------------------------------------
+// Reaper-Notennamen
+// ---------------------------------------------------------------------------
+
+/// Schreibt pro zugeordnetem MIDI-Kanal eine Reaper-Notennamen-Datei,
+/// damit im Piano-Roll "PAR 1: Rot" statt "C#-1" steht.
+pub fn export_note_names(show: &Show) -> Result<PathBuf, String> {
+    let out = show.dir.join("reaper-notennamen");
+    fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let mut written = 0;
+
+    for (ch, t) in show.midi.iter().enumerate() {
+        let Some(t) = t else { continue };
+        let mut s = String::from("# MIDI note/CC name map\n");
+        s.push_str(&format!(
+            "# DMX Bridge: MIDI-Kanal {} -> Universum {}, Block {} (DMX {}-{})\n",
+            ch + 1,
+            t.universe,
+            t.block + 1,
+            t.first_slot() + 1,
+            t.first_slot() + BLOCK_SIZE
+        ));
+        let mut any = false;
+        for n in 0..BLOCK_SIZE {
+            if let Some((f, c)) = show.lookup(t.universe, t.first_slot() + n) {
+                s.push_str(&format!("{n} {}: {}\n", f.name, c.label));
+                any = true;
+            }
+        }
+        if !any {
+            continue;
+        }
+        fs::write(out.join(format!("midi-kanal-{:02}.txt", ch + 1)), s).map_err(|e| e.to_string())?;
+        written += 1;
+    }
+
+    if written == 0 {
+        return Err("kein MIDI-Kanal mit gepatchten Geräten".into());
+    }
+    Ok(out)
+}

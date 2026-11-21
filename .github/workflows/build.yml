@@ -103,6 +103,9 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Repo-Adresse in die Release-Notizen einsetzen
+        run: sed -i "s#REPO_URL#${{ github.server_url }}/${{ github.repository }}#g" .github/release-notes.md
+
       - name: Release anlegen
         uses: softprops/action-gh-release@v2
         with:

@@ -25,4 +25,4 @@ MIDI-Noten in Reaper direkt als DMX über Art-Net. Kein QLC+ und kein virtuelles
 - Konfig wird beim Speichern automatisch neu geladen
 - Export von Reaper-Notennamen („PAR 1: Rot“ statt „C#-1“)
 
-Details siehe [README](https://github.com/Der-Tino/MIDI-DMX-Bridge-CLAP#readme).
+Details siehe [README](REPO_URL#readme).

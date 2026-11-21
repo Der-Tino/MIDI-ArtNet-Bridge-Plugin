@@ -70,6 +70,9 @@ jobs:
       - name: ZIP packen
         shell: bash
         run: |
+          # Lizenzhinweise für die eingebettete QLC+-Fixture-Bibliothek mitliefern
+          cp library/QLCPLUS-LICENSE.txt target/bundled/
+          printf 'Die eingebettete Fixture-Bibliothek stammt aus QLC+ (https://www.qlcplus.org),\nLizenz: Apache License 2.0 (siehe QLCPLUS-LICENSE.txt).\n' > target/bundled/HINWEIS-QLCPLUS.txt
           cd target/bundled
           ZIP="DMX-Bridge-${{ matrix.name }}.zip"
           if [ "$RUNNER_OS" = "Windows" ]; then

@@ -3,6 +3,7 @@
 # Auslöser:
 #   - Push auf main          → Builds als Download unter "Actions" → Lauf → "Artifacts"
 #   - Tag v* (z. B. v0.3.0)   → zusätzlich GitHub-Release mit allen ZIPs
+#                               (v0.3.0-alpha / -beta / -rc → Vorabversion)
 #   - manuell                 → Actions → "Build" → "Run workflow"
 
 name: Build
@@ -81,3 +82,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: DMX-Bridge-${{ matrix.name }}.zip
+          name: DMX Bridge ${{ github.ref_name }}
+          # alpha/beta/rc im Tag-Namen → als Vorabversion markieren
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}

@@ -155,6 +155,19 @@ impl ChanKind {
             .unwrap_or("?")
     }
 
+    /// Schlüsselwort, das der Editor in Dateien schreibt
+    pub fn keyword(self) -> &'static str {
+        KIND_TABLE
+            .iter()
+            .find(|(k, _, _)| *k == self)
+            .map(|(_, _, keys)| keys[0])
+            .unwrap_or("sonst")
+    }
+
+    pub fn all() -> impl Iterator<Item = ChanKind> {
+        KIND_TABLE.iter().map(|(k, _, _)| *k)
+    }
+
     pub fn keyword_list() -> String {
         KIND_TABLE
             .iter()
@@ -192,7 +205,7 @@ pub enum Effect {
     Text,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Capability {
     pub min: u8,
     pub max: u8,
@@ -220,7 +233,7 @@ impl Capability {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FixtureChannel {
     pub kind: ChanKind,
     pub label: String,
@@ -425,8 +438,97 @@ pub struct Show {
     pub midi: [Option<MidiTarget>; 16],
     pub fixtures: Vec<PatchedFixture>,
     pub messages: Vec<Message>,
+    /// Patch-Zeilen wie in patch.txt (für den Editor)
+    pub patch: Vec<PatchEntry>,
+    /// alle Fixture-Typen aus fixtures/
+    pub types: Vec<TypeInfo>,
     /// Universum → 512 Slots → (Fixture-Index, Kanal-Index)
     slots: HashMap<u16, Vec<Option<(usize, usize)>>>,
+}
+
+/// Eine Zeile aus patch.txt
+#[derive(Clone, Debug, PartialEq)]
+pub struct PatchEntry {
+    pub name: String,
+    pub fixture: String,
+    pub universe: u16,
+    pub address: u16,
+    pub mode: Option<String>,
+    pub count: usize,
+    pub spacing: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeInfo {
+    pub ft: FixtureType,
+    pub file: String,
+    pub is_qxf: bool,
+}
+
+/// Bearbeitbare Grundeinstellungen (config.txt)
+#[derive(Clone, Debug, PartialEq)]
+pub struct Settings {
+    pub artnet_ip: Ipv4Addr,
+    pub artnet_port: u16,
+    pub refresh_hz: f32,
+    pub cc_input: bool,
+    pub midi: [Option<MidiTarget>; 16],
+}
+
+impl Show {
+    pub fn settings(&self) -> Settings {
+        Settings {
+            artnet_ip: self.artnet_ip,
+            artnet_port: self.artnet_port,
+            refresh_hz: self.refresh_hz,
+            cc_input: self.cc_input,
+            midi: self.midi,
+        }
+    }
+
+    pub fn type_info(&self, id: &str) -> Option<&TypeInfo> {
+        self.types.iter().find(|t| t.ft.id == id)
+    }
+
+    /// Erste freie Adresse für `len` Kanäle in einem Universum
+    /// (berücksichtigt die übergebenen Patch-Zeilen, nicht nur den geladenen Stand).
+    pub fn next_free_address(&self, entries: &[PatchEntry], universe: u16, len: usize) -> Option<u16> {
+        let mut used = vec![false; DMX_SIZE];
+        for e in entries.iter().filter(|e| e.universe == universe) {
+            let n = self.entry_channels(e).max(1);
+            let step = e.spacing.unwrap_or(n);
+            for i in 0..e.count.max(1) {
+                let start = e.address as usize - 1 + i * step;
+                for s in start..(start + n).min(DMX_SIZE) {
+                    used[s] = true;
+                }
+            }
+        }
+        let len = len.max(1);
+        (0..=DMX_SIZE.saturating_sub(len))
+            .find(|&a| used[a..a + len].iter().all(|u| !u))
+            .map(|a| a as u16 + 1)
+    }
+
+    /// Kanalanzahl einer Patch-Zeile (0, wenn Fixture/Modus unbekannt)
+    pub fn entry_channels(&self, e: &PatchEntry) -> usize {
+        self.type_info(&e.fixture)
+            .and_then(|t| pick_mode(&t.ft, e.mode.as_deref()))
+            .map_or(0, |m| m.channels.len())
+    }
+}
+
+pub fn pick_mode<'a>(ft: &'a FixtureType, req: Option<&str>) -> Option<&'a FixtureMode> {
+    match req {
+        Some(req) => {
+            let r = req.to_lowercase();
+            ft.modes
+                .iter()
+                .find(|m| m.name.to_lowercase() == r)
+                .or_else(|| ft.modes.iter().find(|m| m.name.to_lowercase().contains(&r)))
+        }
+        None => ft.modes.first(),
+    }
 }
 
 impl Show {
@@ -440,6 +542,8 @@ impl Show {
             midi: default_midi_map(),
             fixtures: Vec::new(),
             messages: Vec::new(),
+            patch: Vec::new(),
+            types: Vec::new(),
             slots: HashMap::new(),
         }
     }
@@ -545,11 +649,14 @@ pub fn load_show(dir: &Path) -> Show {
         Ok(t) => parse_patch(&mut show, &t, &types),
         Err(e) => show.msg(Level::Warn, format!("patch.txt: {e} – nichts gepatcht")),
     }
+    let mut infos: Vec<TypeInfo> = types.into_values().collect();
+    infos.sort_by(|a, b| a.ft.name.to_lowercase().cmp(&b.ft.name.to_lowercase()));
+    let n_types = infos.len();
+    show.types = infos;
 
     validate(&mut show);
     let info = format!(
-        "{} Fixture-Typen, {} Geräte gepatcht",
-        types.len(),
+        "{n_types} Fixture-Typen, {} Geräte gepatcht",
         show.fixtures.len()
     );
     show.msg(Level::Info, info);
@@ -724,7 +831,7 @@ fn parse_config(show: &mut Show, text: &str) {
     }
 }
 
-fn load_fixture_types(show: &mut Show, dir: &Path) -> HashMap<String, FixtureType> {
+fn load_fixture_types(show: &mut Show, dir: &Path) -> HashMap<String, TypeInfo> {
     let mut map = HashMap::new();
     let rd = match fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -769,12 +876,12 @@ fn load_fixture_types(show: &mut Show, dir: &Path) -> HashMap<String, FixtureTyp
                     for w in warnings {
                         show.msg(Level::Warn, format!("fixtures/{fname}: {w}"));
                     }
-                    map.insert(id, ft);
+                    map.insert(id, TypeInfo { ft, file: fname, is_qxf: true });
                 }
                 Err(e) => show.msg(Level::Error, format!("fixtures/{fname}: {e}")),
             }
         } else if let Some(ft) = parse_fixture(show, &id, &fname, &text) {
-            map.insert(id, ft);
+            map.insert(id, TypeInfo { ft, file: fname, is_qxf: false });
         }
     }
     map
@@ -909,7 +1016,7 @@ fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<F
     })
 }
 
-fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, FixtureType>) {
+fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, TypeInfo>) {
     for (ln, line) in clean_lines(text) {
         let parts: Vec<&str> = line.split('|').map(str::trim).collect();
         if parts.len() < 4 {
@@ -924,13 +1031,6 @@ fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, FixtureType>
             .trim_end_matches(".txt")
             .trim_end_matches(".qxf")
             .to_string();
-        let Some(ft) = types.get(&tid) else {
-            show.msg(
-                Level::Error,
-                format!("patch.txt Zeile {ln}: Fixture '{tid}' nicht in fixtures/ gefunden"),
-            );
-            continue;
-        };
         let universe = match parts[2].parse::<u16>() {
             Ok(u) if u <= MAX_UNIVERSE => u,
             _ => {
@@ -975,6 +1075,24 @@ fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, FixtureType>
             }
         }
 
+        show.patch.push(PatchEntry {
+            name: parts[0].to_string(),
+            fixture: tid.clone(),
+            universe,
+            address: address as u16,
+            mode: mode_req.clone(),
+            count,
+            spacing,
+        });
+
+        let Some(ft) = types.get(&tid).map(|t| &t.ft) else {
+            show.msg(
+                Level::Error,
+                format!("patch.txt Zeile {ln}: Fixture '{tid}' nicht in fixtures/ gefunden"),
+            );
+            continue;
+        };
+
         let mode_list = || {
             ft.modes
                 .iter()
@@ -982,16 +1100,7 @@ fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, FixtureType>
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let mode = match &mode_req {
-            Some(req) => {
-                let r = req.to_lowercase();
-                ft.modes
-                    .iter()
-                    .find(|m| m.name.to_lowercase() == r)
-                    .or_else(|| ft.modes.iter().find(|m| m.name.to_lowercase().contains(&r)))
-            }
-            None => ft.modes.first(),
-        };
+        let mode = pick_mode(ft, mode_req.as_deref());
         let Some(mode) = mode else {
             show.msg(
                 Level::Error,
@@ -1160,4 +1269,220 @@ pub fn export_note_names(show: &Show) -> Result<PathBuf, String> {
         return Err("kein MIDI-Kanal mit gepatchten Geräten".into());
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Schreiben (Editor im Plugin)
+// ---------------------------------------------------------------------------
+
+/// Schreibt erst in eine Temp-Datei und benennt dann um, damit der
+/// Nachlade-Thread nie eine halb geschriebene Datei liest.
+/// Die vorherige Version bleibt als `<datei>.bak` liegen.
+fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if path.exists() {
+        let mut bak = path.as_os_str().to_owned();
+        bak.push(".bak");
+        let _ = fs::copy(path, PathBuf::from(bak));
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, content).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+/// Text für eine Spalte: keine Trenner, keine Kommentarzeichen
+fn cell(s: &str) -> String {
+    s.replace('|', "/")
+        .replace('#', "Nr.")
+        .replace(['\n', '\r', '\t'], " ")
+        .trim()
+        .to_string()
+}
+
+pub fn file_slug(name: &str) -> String {
+    let mut s = String::new();
+    for c in name.to_lowercase().chars() {
+        let c = match c {
+            'ä' => 'a',
+            'ö' => 'o',
+            'ü' => 'u',
+            'ß' => 's',
+            c => c,
+        };
+        if c.is_ascii_alphanumeric() {
+            s.push(c);
+        } else if !s.is_empty() && !s.ends_with('_') {
+            s.push('_');
+        }
+    }
+    let s = s.trim_matches('_').to_string();
+    if s.is_empty() {
+        "fixture".into()
+    } else {
+        s
+    }
+}
+
+pub fn write_patch(dir: &Path, entries: &[PatchEntry]) -> Result<(), String> {
+    let mut out = String::from(
+        "# Patch-Liste – gespeichert vom DMX-Bridge-Editor (Handbearbeitung weiterhin möglich)\n\
+         # Name | Fixture | Universum | Startadresse | [modus=…] [anzahl=n] [abstand=n]\n\n",
+    );
+    let w_name = entries.iter().map(|e| cell(&e.name).chars().count()).max().unwrap_or(4).max(4);
+    let w_fix = entries.iter().map(|e| e.fixture.chars().count()).max().unwrap_or(7).max(7);
+    for e in entries {
+        let name = cell(&e.name);
+        let mut line = format!(
+            "{name:<w_name$} | {:<w_fix$} | {} | {}",
+            e.fixture, e.universe, e.address
+        );
+        if let Some(m) = &e.mode {
+            line.push_str(&format!(" | modus={}", cell(m)));
+        }
+        if e.count > 1 {
+            line.push_str(&format!(" | anzahl={}", e.count));
+        }
+        if let Some(sp) = e.spacing {
+            line.push_str(&format!(" | abstand={sp}"));
+        }
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    write_atomic(&dir.join("patch.txt"), &out)
+}
+
+pub fn write_config(dir: &Path, s: &Settings) -> Result<(), String> {
+    let mut out = String::new();
+    out.push_str("# DMX Bridge – Grundeinstellungen (gespeichert vom Editor)\nformat = 1\n\n");
+    out.push_str("# Art-Net-Ziel: IP des Nodes (Unicast empfohlen). 255.255.255.255 = Broadcast\n");
+    out.push_str(&format!("artnet_ip = {}\nartnet_port = {}\n\n", s.artnet_ip, s.artnet_port));
+    out.push_str("# Wiederholrate pro Universum in Hz (1–44)\n");
+    out.push_str(&format!("refresh_hz = {}\n\n", fmt_num(s.refresh_hz)));
+    out.push_str("# MIDI-CCs als Werte annehmen (CC-Nummer = Slot wie die Note)\n");
+    out.push_str(&format!("cc_eingang = {}\n\n", if s.cc_input { "an" } else { "aus" }));
+    out.push_str("# MIDI-Kanal → Universum + Block (1 = DMX 1–128, 2 = 129–256, 3 = 257–384, 4 = 385–512)\n");
+    for (i, t) in s.midi.iter().enumerate() {
+        let key = format!("midi{}", i + 1);
+        match t {
+            Some(t) => out.push_str(&format!("{key:<6} = {} {}\n", t.universe, t.block + 1)),
+            None => out.push_str(&format!("{key:<6} = aus\n")),
+        }
+    }
+    write_atomic(&dir.join("config.txt"), &out)
+}
+
+fn fmt_num(x: f32) -> String {
+    if (x - x.round()).abs() < 1e-4 {
+        format!("{}", x.round() as i64)
+    } else {
+        format!("{x:.2}").trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+fn hex(c: Rgb) -> String {
+    format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+}
+
+pub fn effect_to_text(e: &Effect) -> String {
+    match e {
+        Effect::Nothing => "aus".into(),
+        Effect::Open => "offen".into(),
+        Effect::Closed => "zu".into(),
+        Effect::Strobe { from, to, random } => format!(
+            "{} {}-{}",
+            if *random { "zufall" } else { "strobe" },
+            fmt_num(*from),
+            fmt_num(*to)
+        ),
+        Effect::Color(a, None) => format!("farbe {}", hex(*a)),
+        Effect::Color(a, Some(b)) => format!("farbe {} {}", hex(*a), hex(*b)),
+        Effect::Text => "info".into(),
+    }
+}
+
+pub fn fixture_to_text(name: &str, channels: &[FixtureChannel], source_note: Option<&str>) -> String {
+    let mut out = String::new();
+    out.push_str("# Fixture – gespeichert vom DMX-Bridge-Editor\n");
+    if let Some(n) = source_note {
+        out.push_str(&format!("# {}\n", cell(n)));
+    }
+    out.push_str("# Kanal | Typ | Bezeichnung | Ruhewert\n#   von-bis | Funktion | Bezeichnung\n\n");
+    out.push_str(&format!("name = {}\n\n", cell(name)));
+    for (i, ch) in channels.iter().enumerate() {
+        out.push_str(&format!(
+            "{:<3} | {:<14} | {}",
+            i + 1,
+            ch.kind.keyword(),
+            cell(&ch.label)
+        ));
+        if ch.rest != 0 {
+            out.push_str(&format!(" | {}", ch.rest));
+        }
+        out.push('\n');
+        for c in &ch.caps {
+            out.push_str(&format!(
+                "    {}-{} | {} | {}\n",
+                c.min,
+                c.max,
+                effect_to_text(&c.effect),
+                cell(&c.label)
+            ));
+        }
+    }
+    out
+}
+
+/// Speichert ein Fixture im Textformat; gibt die Fixture-ID (Dateiname ohne .txt) zurück.
+pub fn write_fixture_txt(
+    dir: &Path,
+    id: &str,
+    name: &str,
+    channels: &[FixtureChannel],
+    source_note: Option<&str>,
+) -> Result<String, String> {
+    if channels.is_empty() {
+        return Err("ein Fixture braucht mindestens einen Kanal".into());
+    }
+    let id = file_slug(id);
+    write_atomic(
+        &dir.join("fixtures").join(format!("{id}.txt")),
+        &fixture_to_text(name, channels, source_note),
+    )?;
+    Ok(id)
+}
+
+/// Freie Fixture-ID: `base`, sonst `base_2`, `base_3` …
+pub fn unique_fixture_id(dir: &Path, base: &str) -> String {
+    let base = file_slug(base);
+    let taken = |id: &str| {
+        let f = dir.join("fixtures");
+        f.join(format!("{id}.txt")).exists() || f.join(format!("{id}.qxf")).exists()
+    };
+    if !taken(&base) {
+        return base;
+    }
+    (2..)
+        .map(|i| format!("{base}_{i}"))
+        .find(|id| !taken(id))
+        .unwrap_or(base)
+}
+
+/// QLC+-Definition aus der Bibliothek in fixtures/ ablegen. Ist dieselbe
+/// Datei schon vorhanden, wird sie wiederverwendet. Gibt die ID zurück.
+pub fn install_qxf(dir: &Path, base_id: &str, text: &str) -> Result<String, String> {
+    let base = file_slug(base_id);
+    let fdir = dir.join("fixtures");
+    let same = fs::read_to_string(fdir.join(format!("{base}.qxf")))
+        .map(|t| t == text)
+        .unwrap_or(false);
+    if same {
+        return Ok(base);
+    }
+    let id = unique_fixture_id(dir, &base);
+    write_atomic(&fdir.join(format!("{id}.qxf")), text)?;
+    Ok(id)
 }

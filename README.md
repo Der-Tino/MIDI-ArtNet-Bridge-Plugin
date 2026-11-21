@@ -1,4 +1,4 @@
-# DMX Bridge v0.3 – MIDI → Art-Net als CLAP/VST3
+# DMX Bridge v0.4 – MIDI → Art-Net als CLAP/VST3
 
 Licht als MIDI-Noten in Reaper, das Plugin schickt die Werte direkt als Art-Net raus.
 Kein QLC+, kein virtuelles MIDI-Kabel, kein Hintergrund-Skript.
@@ -145,6 +145,21 @@ gelb/rot an. Es stürzt deswegen nicht ab, und die restliche Konfiguration läuf
 
 ## GUI
 
+Das Fenster lässt sich an der unteren rechten Ecke größer ziehen; die Schriftgröße
+stellst du unter **Einstellungen → Darstellung** ein (75–250 %).
+
+| Tab | Was |
+|---|---|
+| **Live** | Bühnenansicht, Fader pro Kanal, Konfig-Meldungen |
+| **Patch** | Geräte hinzufügen, entfernen, umsortieren; Fixture, Modus, Universum, Adresse, Anzahl |
+| **Fixtures** | eigene Fixtures anlegen und bearbeiten (Kanäle, Typen, Ruhewerte, Wertebereiche); QLC+-Fixtures als bearbeitbare Kopie |
+| **QLC+-Bibliothek** | alle ~1800 Fixtures aus QLC+ durchsuchen, Modus wählen, mit einem Klick patchen |
+| **Einstellungen** | Node-IP, Port, Rate, MIDI-Kanal → Universum/Block, Schriftgröße, Konfig-Ordner |
+
+Alles, was du im Plugin speicherst, landet in denselben Textdateien (vorherige Version
+jeweils als `.bak`). Handbearbeitung bleibt möglich.
+
+
 - **Bühne:** eine Kachel pro Gerät mit Live-Farbe (RGBWA+UV, CMY, Farbrad/Makro × Dimmer).
   Strobe blinkt mit der eingestellten Frequenz, die Hz-Zahl steht in der Kachel.
   Shutter „zu“ wird dunkel dargestellt. Die Vorschau ist eine Annäherung: Ab etwa
@@ -173,3 +188,15 @@ gelb/rot an. Es stürzt deswegen nicht ab, und die restliche Konfiguration läuf
 - „Art-Net Ausgabe“ aus = es wird gar nichts gesendet (z. B. wenn die Haus-Lichtanlage übernimmt).
 - Master und Blackout sind Plugin-Parameter und lassen sich in Reaper automatisieren
   oder auf einen Controller legen.
+
+## QLC+-Fixture-Bibliothek
+
+Die Fixture-Definitionen stammen aus dem Projekt [QLC+](https://www.qlcplus.org)
+(Massimo Callegari und Mitwirkende) und stehen unter der Apache License 2.0
+(`library/QLCPLUS-LICENSE.txt`). Sie sind komprimiert im Plugin eingebettet
+(`library/qlcplus-fixtures.pack`). Aktualisieren:
+
+```bash
+git clone --depth 1 https://github.com/mcallegari/qlcplus /tmp/qlcplus
+python3 tools/update_library.py /tmp/qlcplus
+```

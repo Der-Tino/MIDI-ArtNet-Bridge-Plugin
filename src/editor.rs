@@ -1,4 +1,4 @@
-//! GUI: Status, Master/Blackout, Konfig-Ordner, Live-Vorschau aller Geräte.
+//! GUI: Live-Vorschau, Patch-Editor, Fixture-Editor, QLC+-Bibliothek, Einstellungen.
 
 use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
@@ -6,23 +6,90 @@ use std::sync::Arc;
 
 use nih_plug::prelude::*;
 use nih_plug_egui::egui::{self, Color32, RichText};
+use nih_plug_egui::resizable_window::ResizableWindow;
 use nih_plug_egui::{create_egui_editor, widgets::ParamSlider};
 
 use crate::artnet;
-use crate::config::{self, Level, PatchedFixture, Show, BLOCK_SIZE};
+use crate::config::{
+    self, Capability, ChanKind, Effect, FixtureChannel, FixtureType, Level, MidiTarget,
+    PatchEntry, PatchedFixture, Settings, Show, BLOCK_SIZE,
+};
+use crate::library;
 use crate::preview;
+use crate::qxf;
 use crate::shared::{self, Shared, MAX_BUFS};
 use crate::BridgeParams;
 
-const RED: Color32 = Color32::from_rgb(230, 80, 70);
-const YELLOW: Color32 = Color32::from_rgb(230, 190, 60);
-const GREEN: Color32 = Color32::from_rgb(90, 200, 110);
+const RED: Color32 = Color32::from_rgb(235, 90, 80);
+const YELLOW: Color32 = Color32::from_rgb(235, 195, 70);
+const GREEN: Color32 = Color32::from_rgb(100, 205, 120);
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Tab {
+    #[default]
+    Live,
+    Patch,
+    Fixtures,
+    Library,
+    Settings,
+}
+
+/// Arbeitskopie eines Text-Fixtures im Editor
+#[derive(Clone)]
+struct FxEdit {
+    id: String,
+    name: String,
+    channels: Vec<FixtureChannel>,
+    open_caps: Vec<bool>,
+    /// Stand beim Laden/Speichern – zum Erkennen ungespeicherter Änderungen
+    base: Option<(String, Vec<FixtureChannel>)>,
+}
+
+impl FxEdit {
+    fn dirty(&self) -> bool {
+        match &self.base {
+            Some((n, c)) => *n != self.name || *c != self.channels,
+            None => true,
+        }
+    }
+}
 
 #[derive(Default)]
 struct UiState {
-    dir_edit: String,
+    tab: Tab,
     initialized: bool,
     info: Option<(bool, String)>,
+    dir_edit: String,
+    applied_scale: f32,
+
+    rate_t: f64,
+    rate_pkts: u64,
+    rate: f32,
+
+    show_ptr: usize,
+
+    patch: Vec<PatchEntry>,
+    patch_base: Vec<PatchEntry>,
+
+    settings: Option<Settings>,
+    settings_base: Option<Settings>,
+    ip_text: String,
+
+    fx_sel: Option<String>,
+    fx_edit: Option<FxEdit>,
+    new_fx_name: String,
+    qxf_copy_mode: usize,
+
+    lib_query: String,
+    lib_last_query: Option<String>,
+    lib_results: Vec<usize>,
+    lib_sel: Option<usize>,
+    lib_parsed: Option<(usize, Result<FixtureType, String>)>,
+    lib_mode: usize,
+    lib_name: String,
+    lib_universe: u16,
+    lib_address: u16,
+    lib_count: usize,
 }
 
 pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn Editor>> {
@@ -33,34 +100,128 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         |_ctx: &egui::Context, _st: &mut UiState| {},
         move |ctx: &egui::Context, setter: &ParamSetter, st: &mut UiState| {
             ctx.request_repaint();
-            let show: Option<Arc<Show>> = shared.show.lock().ok().and_then(|g| g.clone());
+            let now = ctx.input(|i| i.time);
+
+            // Skalierung
+            let scale = params
+                .ui_scale
+                .read()
+                .map(|v| *v)
+                .unwrap_or(1.3)
+                .clamp(0.6, 3.0);
+            if (scale - st.applied_scale).abs() > 0.001 {
+                apply_scale(ctx, scale);
+                st.applied_scale = scale;
+            }
+
             if !st.initialized {
                 st.dir_edit = artnet::effective_dir(&params).display().to_string();
+                st.rate_t = now;
+                st.rate_pkts = shared.packets_sent.load(Relaxed);
+                st.lib_count = 1;
                 st.initialized = true;
+            }
+
+            // Paketrate statt Zähler
+            if now - st.rate_t >= 1.0 {
+                let p = shared.packets_sent.load(Relaxed);
+                st.rate = (p.saturating_sub(st.rate_pkts)) as f32 / (now - st.rate_t) as f32;
+                st.rate_pkts = p;
+                st.rate_t = now;
+            }
+
+            let show: Option<Arc<Show>> = shared.show.lock().ok().and_then(|g| g.clone());
+            if let Some(s) = &show {
+                sync_with_show(st, s);
             }
             let master = master_value(&params);
 
-            egui::CentralPanel::default().show(ctx, |ui| {
-                header(ui, &params, &shared, setter, show.as_deref());
-                ui.separator();
-                folder_row(ui, &params, &shared, st, show.as_deref());
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| match show.as_deref() {
-                        Some(show) => {
-                            messages(ui, show);
-                            midi_table(ui, show);
-                            ui.add_space(6.0);
-                            fixtures(ui, show, &shared, master);
-                        }
-                        None => {
-                            ui.label("Lade Konfiguration …");
-                        }
-                    });
-            });
+            ResizableWindow::new("dmx-bridge-main")
+                .min_size(egui::vec2(640.0, 420.0))
+                .show(ctx, &params.editor_state, |ui| {
+                    header(ui, &params, &shared, setter, show.as_deref(), st);
+                    ui.add_space(4.0);
+                    tab_bar(ui, st);
+                    ui.separator();
+
+                    let Some(show) = show.as_deref() else {
+                        ui.label("Lade Konfiguration …");
+                        return;
+                    };
+                    egui::ScrollArea::vertical()
+                        .id_salt("main-scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| match st.tab {
+                            Tab::Live => live_tab(ui, show, &shared, master),
+                            Tab::Patch => patch_tab(ui, show, &shared, st),
+                            Tab::Fixtures => fixtures_tab(ui, show, &shared, st),
+                            Tab::Library => library_tab(ui, show, &shared, st),
+                            Tab::Settings => settings_tab(ui, show, &params, &shared, st),
+                        });
+                });
         },
     )
+}
+
+// ---------------------------------------------------------------------------
+// Allgemein
+// ---------------------------------------------------------------------------
+
+fn apply_scale(ctx: &egui::Context, scale: f32) {
+    let base = egui::Style::default();
+    let mut st = (*ctx.style()).clone();
+    for (ts, font) in st.text_styles.iter_mut() {
+        if let Some(b) = base.text_styles.get(ts) {
+            font.size = b.size * scale;
+        }
+    }
+    let b = &base.spacing;
+    let s = &mut st.spacing;
+    s.item_spacing = b.item_spacing * scale;
+    s.button_padding = b.button_padding * scale;
+    s.interact_size = b.interact_size * scale;
+    s.slider_width = b.slider_width * scale;
+    s.icon_width = b.icon_width * scale;
+    s.icon_width_inner = b.icon_width_inner * scale;
+    s.icon_spacing = b.icon_spacing * scale;
+    s.indent = b.indent * scale;
+    s.combo_width = b.combo_width * scale;
+    s.text_edit_width = b.text_edit_width * scale;
+    ctx.set_style(st);
+}
+
+/// Neue Konfiguration geladen → Arbeitskopien ohne ungespeicherte
+/// Änderungen aktualisieren.
+fn sync_with_show(st: &mut UiState, show: &Arc<Show>) {
+    let ptr = Arc::as_ptr(show) as usize;
+    if ptr == st.show_ptr {
+        return;
+    }
+    st.show_ptr = ptr;
+
+    if st.patch == st.patch_base {
+        st.patch = show.patch.clone();
+    }
+    st.patch_base = show.patch.clone();
+
+    let new_settings = show.settings();
+    if st.settings == st.settings_base {
+        st.settings = Some(new_settings.clone());
+        st.ip_text = new_settings.artnet_ip.to_string();
+    }
+    st.settings_base = Some(new_settings);
+
+    if let Some(fx) = &mut st.fx_edit {
+        if let Some(t) = show.type_info(&fx.id).filter(|t| !t.is_qxf) {
+            let loaded = (t.ft.name.clone(), t.ft.modes[0].channels.clone());
+            if !fx.dirty() {
+                fx.name = loaded.0.clone();
+                fx.channels = loaded.1.clone();
+                fx.open_caps.resize(fx.channels.len(), false);
+            }
+            fx.base = Some(loaded);
+        }
+    }
 }
 
 fn master_value(params: &BridgeParams) -> f32 {
@@ -80,139 +241,19 @@ fn toggle(ui: &mut egui::Ui, setter: &ParamSetter, p: &BoolParam, label: &str) {
     }
 }
 
-fn header(
-    ui: &mut egui::Ui,
-    params: &BridgeParams,
-    shared: &Shared,
-    setter: &ParamSetter,
-    show: Option<&Show>,
-) {
-    ui.horizontal(|ui| {
-        ui.heading("DMX Bridge");
-        ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak());
-    });
-
-    ui.horizontal(|ui| {
-        ui.label("Master");
-        ui.add(ParamSlider::for_param(&params.master, setter));
-        ui.add_space(12.0);
-        toggle(ui, setter, &params.blackout, "Blackout");
-        toggle(ui, setter, &params.output_enabled, "Art-Net Ausgabe");
-    });
-
-    let target = show
-        .map(|s| format!("{}:{}", s.artnet_ip, s.artnet_port))
-        .unwrap_or_else(|| "–".into());
-    let unis: Vec<String> = (0..MAX_BUFS)
-        .filter(|&b| shared.buf_active[b].load(Relaxed))
-        .map(|b| shared.buf_universe[b].load(Relaxed).to_string())
-        .collect();
-    let sent = shared.packets_sent.load(Relaxed);
-    let errors = shared.send_errors.load(Relaxed);
-    ui.horizontal_wrapped(|ui| {
-        ui.label(format!(
-            "Ziel {target}  ·  Universen [{}]  ·  {sent} Pakete  ·  {errors} Sendefehler",
-            unis.join(", ")
-        ));
-    });
-
-    if !params.output_enabled.value() {
-        ui.colored_label(YELLOW, "Ausgabe deaktiviert – es wird nichts gesendet.");
-    } else if params.blackout.value() {
-        ui.colored_label(RED, "BLACKOUT aktiv");
-    }
-    if let Some(e) = shared.net_error.lock().ok().and_then(|g| g.clone()) {
-        ui.colored_label(RED, format!("Netzwerk: {e}"));
-    }
-
-    // letztes MIDI-Event – hilfreich zum Debuggen der Zuordnung
-    let count = shared.event_count.load(Relaxed);
-    let text = if count == 0 {
-        "Noch kein MIDI empfangen.".to_string()
-    } else {
-        let ev = shared.last_event.load(Relaxed);
-        let kind = ev >> 24;
-        let ch = ((ev >> 16) & 0x0F) as u8;
-        let n = ((ev >> 8) & 0xFF) as u8;
-        let v = (ev & 0xFF) as u8;
-        let kind_s = match kind {
-            shared::EV_NOTE_ON => "Note On",
-            shared::EV_NOTE_OFF => "Note Off",
-            shared::EV_PRESSURE => "Poly-AT",
-            shared::EV_CC => "CC",
-            shared::EV_RELEASE => "All Notes Off",
-            _ => "?",
-        };
-        if kind == shared::EV_RELEASE {
-            format!("Letztes MIDI: {kind_s} · Kanal {}", ch + 1)
-        } else {
-            let dest = show
-                .and_then(|s| {
-                    let t = s.midi[ch as usize]?;
-                    let slot = t.first_slot() + n as usize;
-                    Some(match s.lookup(t.universe, slot) {
-                        Some((f, c)) => format!("U{} DMX {} = {}: {}", t.universe, slot + 1, f.name, c.label),
-                        None => format!("U{} DMX {} (nicht gepatcht)", t.universe, slot + 1),
-                    })
-                })
-                .unwrap_or_else(|| "MIDI-Kanal nicht zugeordnet".into());
-            format!(
-                "Letztes MIDI: {kind_s} · Kanal {} · {} {n} ({}) → {v}  ·  {dest}",
-                ch + 1,
-                if kind == shared::EV_CC { "CC" } else { "Note" },
-                config::note_name(n)
-            )
-        }
-    };
-    ui.label(RichText::new(text).monospace().small());
-}
-
-fn folder_row(
-    ui: &mut egui::Ui,
-    params: &BridgeParams,
-    shared: &Shared,
-    st: &mut UiState,
-    show: Option<&Show>,
-) {
-    ui.horizontal(|ui| {
-        ui.label("Konfig-Ordner:");
-        ui.add(egui::TextEdit::singleline(&mut st.dir_edit).desired_width(420.0));
-        if ui.button("Übernehmen").clicked() {
-            if let Ok(mut d) = params.config_dir.write() {
-                *d = st.dir_edit.trim().to_string();
-            }
-            shared.reload_request.store(true, Relaxed);
-        }
-        if ui.button("Standard").clicked() {
-            if let Ok(mut d) = params.config_dir.write() {
-                d.clear();
-            }
-            st.dir_edit = config::default_config_dir().display().to_string();
-            shared.reload_request.store(true, Relaxed);
-        }
-    });
-    ui.horizontal(|ui| {
-        if ui.button("Ordner öffnen").clicked() {
-            open_path(&artnet::effective_dir(params));
-        }
-        if ui.button("Neu laden").clicked() {
-            shared.reload_request.store(true, Relaxed);
-            st.info = None;
-        }
-        if ui.button("Alle auf Ruhewert").clicked() {
-            shared.reset_all_to_rest();
-        }
-        if ui.button("Reaper-Notennamen exportieren").clicked() {
-            if let Some(show) = show {
-                st.info = Some(match config::export_note_names(show) {
-                    Ok(p) => (true, format!("Notennamen gespeichert in {}", p.display())),
-                    Err(e) => (false, format!("Export fehlgeschlagen: {e}")),
-                });
-            }
-        }
-    });
+fn info_line(ui: &mut egui::Ui, st: &UiState) {
     if let Some((ok, txt)) = &st.info {
         ui.colored_label(if *ok { GREEN } else { RED }, txt.as_str());
+    }
+}
+
+fn report(st: &mut UiState, shared: &Shared, r: Result<String, String>) {
+    match r {
+        Ok(msg) => {
+            st.info = Some((true, msg));
+            shared.reload_request.store(true, Relaxed);
+        }
+        Err(e) => st.info = Some((false, format!("Fehler: {e}"))),
     }
 }
 
@@ -226,53 +267,145 @@ fn open_path(p: &Path) {
     let _ = std::process::Command::new(cmd).arg(p).spawn();
 }
 
-fn messages(ui: &mut egui::Ui, show: &Show) {
-    for m in &show.messages {
+fn header(
+    ui: &mut egui::Ui,
+    params: &BridgeParams,
+    shared: &Shared,
+    setter: &ParamSetter,
+    show: Option<&Show>,
+    st: &UiState,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.heading("DMX Bridge");
+        ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak());
+        ui.add_space(16.0);
+        ui.label("Master");
+        ui.add(ParamSlider::for_param(&params.master, setter));
+        toggle(ui, setter, &params.blackout, "Blackout");
+        toggle(ui, setter, &params.output_enabled, "Art-Net Ausgabe");
+    });
+
+    let target = show
+        .map(|s| format!("{}:{}", s.artnet_ip, s.artnet_port))
+        .unwrap_or_else(|| "–".into());
+    let unis: Vec<String> = (0..MAX_BUFS)
+        .filter(|&b| shared.buf_active[b].load(Relaxed))
+        .map(|b| shared.buf_universe[b].load(Relaxed).to_string())
+        .collect();
+    let errors = shared.send_errors.load(Relaxed);
+    ui.horizontal_wrapped(|ui| {
+        let rate_col = if st.rate > 0.5 { GREEN } else { YELLOW };
+        ui.label(format!("Art-Net → {target}"));
+        ui.label("·");
+        ui.colored_label(rate_col, format!("{:.0} Pakete/s", st.rate));
+        ui.label("·");
+        ui.label(format!("Universen [{}]", unis.join(", ")));
+        if errors > 0 {
+            ui.label("·");
+            ui.colored_label(RED, format!("{errors} Sendefehler"));
+        }
+        if let Some(s) = show {
+            let n = s.error_count();
+            if n > 0 {
+                ui.label("·");
+                ui.colored_label(RED, format!("{n} Konfig-Fehler (siehe Live)"));
+            }
+        }
+    });
+
+    if !params.output_enabled.value() {
+        ui.colored_label(YELLOW, "Ausgabe deaktiviert – es wird nichts gesendet.");
+    } else if params.blackout.value() {
+        ui.colored_label(RED, "BLACKOUT aktiv");
+    }
+    if let Some(e) = shared.net_error.lock().ok().and_then(|g| g.clone()) {
+        ui.colored_label(RED, format!("Netzwerk: {e}"));
+    }
+    ui.label(RichText::new(last_midi_text(shared, show)).monospace().small());
+}
+
+fn last_midi_text(shared: &Shared, show: Option<&Show>) -> String {
+    if shared.event_count.load(Relaxed) == 0 {
+        return "Noch kein MIDI empfangen.".into();
+    }
+    let ev = shared.last_event.load(Relaxed);
+    let kind = ev >> 24;
+    let ch = ((ev >> 16) & 0x0F) as u8;
+    let n = ((ev >> 8) & 0xFF) as u8;
+    let v = (ev & 0xFF) as u8;
+    let kind_s = match kind {
+        shared::EV_NOTE_ON => "Note On",
+        shared::EV_NOTE_OFF => "Note Off",
+        shared::EV_PRESSURE => "Poly-AT",
+        shared::EV_CC => "CC",
+        shared::EV_RELEASE => "All Notes Off",
+        _ => "?",
+    };
+    if kind == shared::EV_RELEASE {
+        return format!("Letztes MIDI: {kind_s} · Kanal {}", ch + 1);
+    }
+    let dest = show
+        .and_then(|s| {
+            let t = s.midi[ch as usize]?;
+            let slot = t.first_slot() + n as usize;
+            Some(match s.lookup(t.universe, slot) {
+                Some((f, c)) => format!("U{} DMX {} = {}: {}", t.universe, slot + 1, f.name, c.label),
+                None => format!("U{} DMX {} (nicht gepatcht)", t.universe, slot + 1),
+            })
+        })
+        .unwrap_or_else(|| "MIDI-Kanal nicht zugeordnet".into());
+    format!(
+        "Letztes MIDI: {kind_s} · Kanal {} · {} {n} ({}) → {v}  ·  {dest}",
+        ch + 1,
+        if kind == shared::EV_CC { "CC" } else { "Note" },
+        config::note_name(n)
+    )
+}
+
+fn tab_bar(ui: &mut egui::Ui, st: &mut UiState) {
+    let patch_dirty = st.patch != st.patch_base;
+    let settings_dirty = st.settings != st.settings_base;
+    let fx_dirty = st.fx_edit.as_ref().is_some_and(|f| f.dirty());
+    let tabs = [
+        (Tab::Live, "Live", false),
+        (Tab::Patch, "Patch", patch_dirty),
+        (Tab::Fixtures, "Fixtures", fx_dirty),
+        (Tab::Library, "QLC+-Bibliothek", false),
+        (Tab::Settings, "Einstellungen", settings_dirty),
+    ];
+    ui.horizontal_wrapped(|ui| {
+        for (t, label, dirty) in tabs {
+            let text = if dirty { format!("{label} ●") } else { label.to_string() };
+            if ui
+                .selectable_label(st.tab == t, RichText::new(text).strong())
+                .clicked()
+            {
+                st.tab = t;
+                st.info = None;
+            }
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Live
+// ---------------------------------------------------------------------------
+
+fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
+    for m in show.messages.iter().filter(|m| m.level != Level::Info) {
         match m.level {
             Level::Error => ui.colored_label(RED, format!("Fehler: {}", m.text)),
-            Level::Warn => ui.colored_label(YELLOW, format!("Hinweis: {}", m.text)),
-            Level::Info => ui.label(RichText::new(m.text.as_str()).weak()),
+            _ => ui.colored_label(YELLOW, format!("Hinweis: {}", m.text)),
         };
     }
-}
 
-fn midi_table(ui: &mut egui::Ui, show: &Show) {
-    egui::CollapsingHeader::new("MIDI-Kanal → Universum / Block")
-        .default_open(false)
-        .show(ui, |ui| {
-            egui::Grid::new("midimap").striped(true).show(ui, |ui| {
-                for (ch, t) in show.midi.iter().enumerate() {
-                    ui.label(format!("MIDI {}", ch + 1));
-                    match t {
-                        Some(t) => {
-                            ui.label(format!("Universum {}", t.universe));
-                            ui.label(format!(
-                                "Block {}  ·  DMX {}–{}",
-                                t.block + 1,
-                                t.first_slot() + 1,
-                                t.first_slot() + BLOCK_SIZE
-                            ));
-                        }
-                        None => {
-                            ui.label(RichText::new("aus").weak());
-                            ui.label("");
-                        }
-                    }
-                    ui.end_row();
-                }
-            });
-        });
-}
-
-fn fixtures(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
     if show.fixtures.is_empty() {
-        ui.heading("Geräte");
-        ui.label("Keine Geräte gepatcht – patch.txt bearbeiten.");
+        ui.label("Keine Geräte gepatcht – im Tab „Patch“ oder „QLC+-Bibliothek“ hinzufügen.");
         return;
     }
     let t = ui.input(|i| i.time);
+    let scale = ui.style().spacing.interact_size.y / 18.0;
 
-    // aktuelle Werte (inkl. Master) einmal pro Frame einsammeln
     let all_vals: Vec<Vec<u8>> = show
         .fixtures
         .iter()
@@ -284,15 +417,16 @@ fn fixtures(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
         })
         .collect();
 
-    // ---- Bühnenansicht: eine Kachel pro Gerät ----
     ui.heading("Bühne");
     ui.horizontal_wrapped(|ui| {
         for (f, vals) in show.fixtures.iter().zip(&all_vals) {
             let p = preview::compute(f, vals, t);
             ui.vertical(|ui| {
-                ui.set_max_width(70.0);
-                let (rect, resp) =
-                    ui.allocate_exact_size(egui::vec2(64.0, 40.0), egui::Sense::hover());
+                ui.set_max_width(80.0 * scale);
+                let (rect, resp) = ui.allocate_exact_size(
+                    egui::vec2(72.0 * scale, 44.0 * scale),
+                    egui::Sense::hover(),
+                );
                 let fill = if p.lit {
                     Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2])
                 } else {
@@ -304,7 +438,7 @@ fn fixtures(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
                         rect.right_bottom() - egui::vec2(3.0, 2.0),
                         egui::Align2::RIGHT_BOTTOM,
                         format!("{hz:.0} Hz"),
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(11.0 * scale),
                         Color32::from_rgb(240, 240, 240),
                     );
                 }
@@ -323,7 +457,7 @@ fn fixtures(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
     });
 
     ui.add_space(8.0);
-    ui.heading("Geräte & Fader");
+    ui.heading("Fader");
     ui.label(
         RichText::new("Fader setzen den Wert direkt – das nächste MIDI-Event auf dem Kanal überschreibt ihn.")
             .weak()
@@ -344,10 +478,13 @@ fn fixtures(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
         );
         ui.push_id(i, |ui| {
             egui::CollapsingHeader::new(title)
-                .default_open(false)
+                .default_open(show.fixtures.len() <= 2)
                 .show(ui, |ui| {
                     if buf.is_none() {
-                        ui.colored_label(YELLOW, "Universum ist keinem MIDI-Kanal zugeordnet – wird nicht gesendet.");
+                        ui.colored_label(
+                            YELLOW,
+                            "Universum ist keinem MIDI-Kanal zugeordnet – wird nicht gesendet.",
+                        );
                     }
                     egui::Grid::new("chans").striped(true).show(ui, |ui| {
                         for (c, ch) in f.channels.iter().enumerate() {
@@ -367,10 +504,7 @@ fn fixtures(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32) {
                                 }
                             }
                             let out = vals[c];
-                            ui.label(match ch.cap_at(out) {
-                                Some(cap) => cap.describe(out),
-                                None => String::new(),
-                            });
+                            ui.label(ch.cap_at(out).map(|cap| cap.describe(out)).unwrap_or_default());
                             ui.label(
                                 RichText::new(match show.midi_for(f.universe, slot) {
                                     Some((mc, n)) => {
@@ -407,4 +541,867 @@ fn midi_range_text(show: &Show, f: &PatchedFixture) -> String {
         ),
         _ => "MIDI: teilweise/keine Zuordnung".into(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Patch
+// ---------------------------------------------------------------------------
+
+enum RowAction {
+    Up(usize),
+    Down(usize),
+    Remove(usize),
+}
+
+fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) {
+    let dirty = st.patch != st.patch_base;
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("+ Gerät").clicked() {
+            if let Some(t) = show.types.first() {
+                let len = t.ft.modes.first().map_or(1, |m| m.channels.len());
+                let address = show.next_free_address(&st.patch, 0, len).unwrap_or(1);
+                st.patch.push(PatchEntry {
+                    name: t.ft.name.clone(),
+                    fixture: t.ft.id.clone(),
+                    universe: 0,
+                    address,
+                    mode: None,
+                    count: 1,
+                    spacing: None,
+                });
+            }
+        }
+        if ui.add_enabled(dirty, egui::Button::new("Speichern")).clicked() {
+            let r = config::write_patch(&show.dir, &st.patch).map(|_| "patch.txt gespeichert".to_string());
+            if r.is_ok() {
+                st.patch_base = st.patch.clone();
+            }
+            report(st, shared, r);
+        }
+        if ui.add_enabled(dirty, egui::Button::new("Verwerfen")).clicked() {
+            st.patch = show.patch.clone();
+            st.patch_base = show.patch.clone();
+        }
+        if dirty {
+            ui.colored_label(YELLOW, "ungespeicherte Änderungen");
+        }
+    });
+    info_line(ui, st);
+    ui.label(
+        RichText::new("Neue Gerätetypen findest du im Tab „QLC+-Bibliothek“ oder legst sie unter „Fixtures“ an.")
+            .weak()
+            .small(),
+    );
+    ui.add_space(4.0);
+
+    if st.patch.is_empty() {
+        ui.label("Noch keine Geräte gepatcht.");
+    }
+
+    let mut action: Option<RowAction> = None;
+    let n = st.patch.len();
+    egui::Grid::new("patchgrid")
+        .striped(true)
+        .num_columns(9)
+        .show(ui, |ui| {
+            for h in ["Name", "Fixture", "Modus", "Univ.", "Adresse", "Anzahl", "Kanäle", "DMX", ""] {
+                ui.label(RichText::new(h).strong());
+            }
+            ui.end_row();
+
+            for i in 0..n {
+                let e = &mut st.patch[i];
+                ui.add(egui::TextEdit::singleline(&mut e.name).desired_width(150.0));
+
+                let tinfo = show.type_info(&e.fixture);
+                let fx_label = tinfo
+                    .map(|t| t.ft.name.clone())
+                    .unwrap_or_else(|| format!("‹fehlt: {}›", e.fixture));
+                egui::ComboBox::from_id_salt(("fx", i))
+                    .selected_text(fx_label)
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        for t in &show.types {
+                            let src = if t.is_qxf { "QLC+" } else { "txt" };
+                            if ui
+                                .selectable_label(e.fixture == t.ft.id, format!("{}  ({src})", t.ft.name))
+                                .clicked()
+                            {
+                                e.fixture = t.ft.id.clone();
+                                e.mode = None;
+                            }
+                        }
+                    });
+
+                match tinfo.filter(|t| t.ft.modes.len() > 1) {
+                    Some(t) => {
+                        let cur = config::pick_mode(&t.ft, e.mode.as_deref())
+                            .map(|m| m.name.clone())
+                            .unwrap_or_else(|| "?".into());
+                        egui::ComboBox::from_id_salt(("mode", i))
+                            .selected_text(cur.clone())
+                            .show_ui(ui, |ui| {
+                                for m in &t.ft.modes {
+                                    if ui
+                                        .selectable_label(cur == m.name, format!("{} ({} Kan.)", m.name, m.channels.len()))
+                                        .clicked()
+                                    {
+                                        e.mode = Some(m.name.clone());
+                                    }
+                                }
+                            });
+                    }
+                    None => {
+                        ui.label("–");
+                    }
+                }
+
+                ui.add(egui::DragValue::new(&mut e.universe).range(0..=config::MAX_UNIVERSE));
+                ui.add(egui::DragValue::new(&mut e.address).range(1..=512));
+                ui.add(egui::DragValue::new(&mut e.count).range(1..=512));
+
+                let len = show.entry_channels(e);
+                ui.label(len.to_string());
+                let last = e.address as usize + len.max(1) - 1;
+                let dmx = if e.count > 1 {
+                    format!("{}–{} (×{})", e.address, last, e.count)
+                } else {
+                    format!("{}–{}", e.address, last)
+                };
+                ui.label(dmx);
+
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(i > 0, egui::Button::new("↑")).clicked() {
+                        action = Some(RowAction::Up(i));
+                    }
+                    if ui.add_enabled(i + 1 < n, egui::Button::new("↓")).clicked() {
+                        action = Some(RowAction::Down(i));
+                    }
+                    if ui.button("Entfernen").clicked() {
+                        action = Some(RowAction::Remove(i));
+                    }
+                });
+                ui.end_row();
+            }
+        });
+
+    match action {
+        Some(RowAction::Up(i)) => st.patch.swap(i, i - 1),
+        Some(RowAction::Down(i)) => st.patch.swap(i, i + 1),
+        Some(RowAction::Remove(i)) => {
+            st.patch.remove(i);
+        }
+        None => {}
+    }
+
+    let msgs: Vec<_> = show
+        .messages
+        .iter()
+        .filter(|m| m.level != Level::Info && (m.text.starts_with("patch.txt") || m.text.contains("Überschneidung") || m.text.contains("MIDI-Zuordnung")))
+        .collect();
+    if !msgs.is_empty() {
+        ui.add_space(6.0);
+        ui.label(RichText::new("Stand der gespeicherten Datei:").weak());
+        for m in msgs {
+            let col = if m.level == Level::Error { RED } else { YELLOW };
+            ui.colored_label(col, m.text.as_str());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+fn load_fx_edit(show: &Show, id: &str) -> Option<FxEdit> {
+    let t = show.type_info(id).filter(|t| !t.is_qxf)?;
+    let channels = t.ft.modes[0].channels.clone();
+    Some(FxEdit {
+        id: id.to_string(),
+        name: t.ft.name.clone(),
+        open_caps: vec![false; channels.len()],
+        base: Some((t.ft.name.clone(), channels.clone())),
+        channels,
+    })
+}
+
+fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Fixture:");
+        let sel_label = st
+            .fx_sel
+            .as_ref()
+            .and_then(|id| show.type_info(id).map(|t| t.ft.name.clone()).or_else(|| Some(format!("{id} (neu)"))))
+            .unwrap_or_else(|| "– auswählen –".into());
+        let mut picked: Option<String> = None;
+        egui::ComboBox::from_id_salt("fxsel")
+            .selected_text(sel_label)
+            .width(300.0)
+            .show_ui(ui, |ui| {
+                for t in &show.types {
+                    let src = if t.is_qxf { "QLC+" } else { "txt" };
+                    if ui
+                        .selectable_label(st.fx_sel.as_deref() == Some(t.ft.id.as_str()), format!("{}  ({src})", t.ft.name))
+                        .clicked()
+                    {
+                        picked = Some(t.ft.id.clone());
+                    }
+                }
+            });
+        if let Some(id) = picked {
+            st.fx_edit = load_fx_edit(show, &id);
+            st.fx_sel = Some(id);
+            st.qxf_copy_mode = 0;
+            st.info = None;
+        }
+
+        ui.add_space(20.0);
+        ui.add(
+            egui::TextEdit::singleline(&mut st.new_fx_name)
+                .hint_text("Name für neues Fixture")
+                .desired_width(200.0),
+        );
+        if ui
+            .add_enabled(!st.new_fx_name.trim().is_empty(), egui::Button::new("Neu anlegen"))
+            .clicked()
+        {
+            let name = st.new_fx_name.trim().to_string();
+            let id = config::unique_fixture_id(&show.dir, &name);
+            st.fx_edit = Some(FxEdit {
+                id: id.clone(),
+                name,
+                channels: vec![FixtureChannel {
+                    kind: ChanKind::Dimmer,
+                    label: "Dimmer".into(),
+                    rest: 0,
+                    caps: Vec::new(),
+                }],
+                open_caps: vec![false],
+                base: None,
+            });
+            st.fx_sel = Some(id);
+            st.new_fx_name.clear();
+        }
+    });
+    info_line(ui, st);
+    ui.separator();
+
+    // QLC+-Fixture: nur ansehen, als Textkopie bearbeitbar
+    if st.fx_edit.is_none() {
+        if let Some(t) = st.fx_sel.as_deref().and_then(|id| show.type_info(id)) {
+            if t.is_qxf {
+                ui.label(RichText::new(t.ft.name.as_str()).heading());
+                ui.label(format!(
+                    "QLC+-Definition (fixtures/{}). Zum Bearbeiten eine Textkopie eines Modus anlegen:",
+                    t.file
+                ));
+                ui.horizontal_wrapped(|ui| {
+                    egui::ComboBox::from_id_salt("qxfmode")
+                        .selected_text(
+                            t.ft.modes
+                                .get(st.qxf_copy_mode)
+                                .map(|m| m.name.clone())
+                                .unwrap_or_default(),
+                        )
+                        .show_ui(ui, |ui| {
+                            for (i, m) in t.ft.modes.iter().enumerate() {
+                                ui.selectable_value(&mut st.qxf_copy_mode, i, format!("{} ({} Kan.)", m.name, m.channels.len()));
+                            }
+                        });
+                    if ui.button("Als bearbeitbare Textdatei kopieren").clicked() {
+                        if let Some(m) = t.ft.modes.get(st.qxf_copy_mode) {
+                            let id = config::unique_fixture_id(&show.dir, &format!("{}_eigen", t.ft.id));
+                            st.fx_edit = Some(FxEdit {
+                                id: id.clone(),
+                                name: format!("{} ({})", t.ft.name, m.name),
+                                open_caps: vec![false; m.channels.len()],
+                                channels: m.channels.clone(),
+                                base: None,
+                            });
+                            st.fx_sel = Some(id);
+                        }
+                    }
+                });
+                if let Some(m) = t.ft.modes.get(st.qxf_copy_mode) {
+                    channel_overview(ui, &m.channels);
+                }
+                return;
+            }
+        }
+        ui.label("Wähle oben ein Fixture aus oder lege ein neues an.");
+        return;
+    }
+
+    let Some(fx) = st.fx_edit.as_mut() else { return };
+    let dirty = fx.dirty();
+    let mut save = false;
+    let mut discard = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Name:");
+        ui.add(egui::TextEdit::singleline(&mut fx.name).desired_width(260.0));
+        ui.label(RichText::new(format!("Datei: fixtures/{}.txt", fx.id)).weak());
+    });
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("+ Kanal").clicked() {
+            fx.channels.push(FixtureChannel {
+                kind: ChanKind::Other,
+                label: format!("Kanal {}", fx.channels.len() + 1),
+                rest: 0,
+                caps: Vec::new(),
+            });
+            fx.open_caps.push(false);
+        }
+        save = ui.add_enabled(dirty, egui::Button::new("Speichern")).clicked();
+        discard = ui.add_enabled(dirty && fx.base.is_some(), egui::Button::new("Verwerfen")).clicked();
+        if dirty {
+            ui.colored_label(YELLOW, "ungespeicherte Änderungen");
+        }
+    });
+
+    fx.open_caps.resize(fx.channels.len(), false);
+    let mut action: Option<RowAction> = None;
+    let n = fx.channels.len();
+    for c in 0..n {
+        ui.push_id(("ch", c), |ui| {
+            let ch = &mut fx.channels[c];
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("{:>3}", c + 1)).monospace().strong());
+                egui::ComboBox::from_id_salt("kind")
+                    .selected_text(ch.kind.label())
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        for k in ChanKind::all() {
+                            ui.selectable_value(&mut ch.kind, k, k.label());
+                        }
+                    });
+                ui.add(egui::TextEdit::singleline(&mut ch.label).desired_width(170.0));
+                ui.label("Ruhewert");
+                ui.add(egui::DragValue::new(&mut ch.rest).range(0..=255));
+                let caps_btn = format!(
+                    "{} Bereiche ({})",
+                    if fx.open_caps[c] { "▼" } else { "▶" },
+                    ch.caps.len()
+                );
+                if ui.button(caps_btn).clicked() {
+                    fx.open_caps[c] = !fx.open_caps[c];
+                }
+                if ui.add_enabled(c > 0, egui::Button::new("↑")).clicked() {
+                    action = Some(RowAction::Up(c));
+                }
+                if ui.add_enabled(c + 1 < n, egui::Button::new("↓")).clicked() {
+                    action = Some(RowAction::Down(c));
+                }
+                if ui.add_enabled(n > 1, egui::Button::new("Entfernen")).clicked() {
+                    action = Some(RowAction::Remove(c));
+                }
+            });
+            if fx.open_caps[c] {
+                ui.indent("caps", |ui| caps_editor(ui, &mut fx.channels[c]));
+            }
+        });
+    }
+    match action {
+        Some(RowAction::Up(i)) => {
+            fx.channels.swap(i, i - 1);
+            fx.open_caps.swap(i, i - 1);
+        }
+        Some(RowAction::Down(i)) => {
+            fx.channels.swap(i, i + 1);
+            fx.open_caps.swap(i, i + 1);
+        }
+        Some(RowAction::Remove(i)) => {
+            fx.channels.remove(i);
+            fx.open_caps.remove(i);
+        }
+        None => {}
+    }
+
+    if discard {
+        if let Some((n, c)) = fx.base.clone() {
+            fx.name = n;
+            fx.open_caps = vec![false; c.len()];
+            fx.channels = c;
+        }
+    }
+    if save {
+        let r = config::write_fixture_txt(&show.dir, &fx.id, &fx.name, &fx.channels, None);
+        if r.is_ok() {
+            fx.base = Some((fx.name.clone(), fx.channels.clone()));
+        }
+        let id = fx.id.clone();
+        report(st, shared, r.map(|_| format!("fixtures/{id}.txt gespeichert")));
+    }
+}
+
+fn channel_overview(ui: &mut egui::Ui, channels: &[FixtureChannel]) {
+    egui::Grid::new("chov").striped(true).show(ui, |ui| {
+        for (i, ch) in channels.iter().enumerate() {
+            ui.label(format!("{}", i + 1));
+            ui.label(ch.label.as_str());
+            ui.label(RichText::new(ch.kind.label()).weak());
+            let caps: Vec<String> = ch
+                .caps
+                .iter()
+                .take(4)
+                .map(|c| format!("{}-{} {}", c.min, c.max, c.label))
+                .collect();
+            let more = if ch.caps.len() > 4 {
+                format!(" … (+{})", ch.caps.len() - 4)
+            } else {
+                String::new()
+            };
+            ui.label(RichText::new(format!("{}{more}", caps.join(" · "))).small());
+            ui.end_row();
+        }
+    });
+}
+
+const EFFECTS: [&str; 7] = ["Aus", "Offen", "Zu", "Strobe", "Zufalls-Strobe", "Farbe", "Text"];
+
+fn effect_index(e: &Effect) -> usize {
+    match e {
+        Effect::Nothing => 0,
+        Effect::Open => 1,
+        Effect::Closed => 2,
+        Effect::Strobe { random: false, .. } => 3,
+        Effect::Strobe { random: true, .. } => 4,
+        Effect::Color(..) => 5,
+        Effect::Text => 6,
+    }
+}
+
+fn effect_from_index(i: usize, old: &Effect) -> Effect {
+    let (from, to) = match old {
+        Effect::Strobe { from, to, .. } => (*from, *to),
+        _ => config::DEFAULT_STROBE,
+    };
+    match i {
+        0 => Effect::Nothing,
+        1 => Effect::Open,
+        2 => Effect::Closed,
+        3 => Effect::Strobe { from, to, random: false },
+        4 => Effect::Strobe { from, to, random: true },
+        5 => Effect::Color([255, 0, 0], None),
+        _ => Effect::Text,
+    }
+}
+
+fn caps_editor(ui: &mut egui::Ui, ch: &mut FixtureChannel) {
+    let mut remove: Option<usize> = None;
+    for (k, cap) in ch.caps.iter_mut().enumerate() {
+        ui.push_id(("cap", k), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::DragValue::new(&mut cap.min).range(0..=255));
+                ui.label("–");
+                ui.add(egui::DragValue::new(&mut cap.max).range(0..=255));
+                let mut idx = effect_index(&cap.effect);
+                egui::ComboBox::from_id_salt("eff")
+                    .selected_text(EFFECTS[idx])
+                    .show_ui(ui, |ui| {
+                        for (i, name) in EFFECTS.iter().enumerate() {
+                            ui.selectable_value(&mut idx, i, *name);
+                        }
+                    });
+                if idx != effect_index(&cap.effect) {
+                    cap.effect = effect_from_index(idx, &cap.effect);
+                }
+                match &mut cap.effect {
+                    Effect::Strobe { from, to, .. } => {
+                        ui.add(egui::DragValue::new(from).range(0.1..=100.0).speed(0.1).suffix(" Hz"));
+                        ui.label("→");
+                        ui.add(egui::DragValue::new(to).range(0.1..=100.0).speed(0.1).suffix(" Hz"));
+                    }
+                    Effect::Color(a, b) => {
+                        ui.color_edit_button_srgb(a);
+                        let mut two = b.is_some();
+                        if ui.checkbox(&mut two, "2. Farbe").changed() {
+                            *b = if two { Some([0, 0, 255]) } else { None };
+                        }
+                        if let Some(bb) = b {
+                            ui.color_edit_button_srgb(bb);
+                        }
+                    }
+                    _ => {}
+                }
+                ui.add(egui::TextEdit::singleline(&mut cap.label).hint_text("Bezeichnung").desired_width(170.0));
+                if ui.button("Entfernen").clicked() {
+                    remove = Some(k);
+                }
+            });
+        });
+    }
+    if let Some(k) = remove {
+        ch.caps.remove(k);
+    }
+    if ui.button("+ Bereich").clicked() {
+        let start = ch.caps.iter().map(|c| c.max as u16 + 1).max().unwrap_or(0).min(255) as u8;
+        ch.caps.push(Capability {
+            min: start,
+            max: 255,
+            effect: Effect::Text,
+            label: String::new(),
+        });
+    }
+    if ch.caps.iter().any(|c| c.min > c.max) {
+        ui.colored_label(RED, "„von“ ist größer als „bis“");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// QLC+-Bibliothek
+// ---------------------------------------------------------------------------
+
+fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) {
+    let lib = match library::get() {
+        Ok(l) => l,
+        Err(e) => {
+            ui.colored_label(RED, format!("Bibliothek konnte nicht geladen werden: {e}"));
+            return;
+        }
+    };
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Suche:");
+        ui.add(
+            egui::TextEdit::singleline(&mut st.lib_query)
+                .hint_text("Hersteller, Modell oder Typ – z. B. „eurolite par“")
+                .desired_width(360.0),
+        );
+    });
+    if st.lib_last_query.as_deref() != Some(st.lib_query.as_str()) {
+        st.lib_results = lib.search(&st.lib_query, 500);
+        st.lib_last_query = Some(st.lib_query.clone());
+    }
+    ui.label(
+        RichText::new(format!(
+            "{} Treffer von {} Fixtures{}",
+            st.lib_results.len(),
+            lib.entries.len(),
+            if st.lib_results.len() >= 500 { " (Suche verfeinern)" } else { "" }
+        ))
+        .weak(),
+    );
+
+    let row_h = ui.style().spacing.interact_size.y;
+    let mut clicked: Option<usize> = None;
+    let sel = st.lib_sel;
+    egui::ScrollArea::vertical()
+        .id_salt("libresults")
+        .max_height(row_h * 10.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for &i in &st.lib_results {
+                let e = &lib.entries[i];
+                if ui
+                    .selectable_label(sel == Some(i), format!("{} – {}   ({})", e.manufacturer, e.model, e.kind))
+                    .clicked()
+                {
+                    clicked = Some(i);
+                }
+            }
+        });
+    if let Some(i) = clicked {
+        st.lib_sel = Some(i);
+        st.info = None;
+    }
+    ui.separator();
+
+    let Some(i) = st.lib_sel else {
+        ui.label("Fixture aus der Liste wählen.");
+        attribution(ui);
+        return;
+    };
+    let e = &lib.entries[i];
+    if st.lib_parsed.as_ref().map(|(j, _)| *j) != Some(i) {
+        let parsed = qxf::parse_qxf(&library::slug(&e.manufacturer, &e.model), &lib.text(e)).map(|(ft, _)| ft);
+        st.lib_parsed = Some((i, parsed));
+        st.lib_mode = 0;
+        st.lib_name = e.model.clone();
+        st.lib_count = 1;
+        st.lib_address = 0;
+    }
+    let ft = match &st.lib_parsed {
+        Some((_, Ok(ft))) => ft.clone(),
+        Some((_, Err(err))) => {
+            ui.colored_label(RED, format!("Fixture nicht lesbar: {err}"));
+            return;
+        }
+        None => return,
+    };
+
+    ui.label(RichText::new(format!("{} {}", e.manufacturer, e.model)).heading());
+    ui.label(RichText::new(format!("{} · {} Modi", e.kind, ft.modes.len())).weak());
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Modus:");
+        for (mi, m) in ft.modes.iter().enumerate() {
+            if ui
+                .selectable_label(st.lib_mode == mi, format!("{} ({} Kan.)", m.name, m.channels.len()))
+                .clicked()
+            {
+                st.lib_mode = mi;
+                st.lib_address = 0;
+            }
+        }
+    });
+    let mode = &ft.modes[st.lib_mode.min(ft.modes.len() - 1)];
+    let len = mode.channels.len() * st.lib_count.max(1);
+    if st.lib_address == 0 {
+        st.lib_address = show.next_free_address(&st.patch, st.lib_universe, len).unwrap_or(1);
+    }
+
+    egui::CollapsingHeader::new(format!("Kanäle im Modus „{}“", mode.name))
+        .default_open(false)
+        .show(ui, |ui| channel_overview(ui, &mode.channels));
+
+    ui.add_space(4.0);
+    egui::Grid::new("libpatch").num_columns(2).show(ui, |ui| {
+        ui.label("Name im Patch");
+        ui.add(egui::TextEdit::singleline(&mut st.lib_name).desired_width(240.0));
+        ui.end_row();
+        ui.label("Universum");
+        if ui.add(egui::DragValue::new(&mut st.lib_universe).range(0..=config::MAX_UNIVERSE)).changed() {
+            st.lib_address = 0;
+        }
+        ui.end_row();
+        ui.label("Startadresse");
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut st.lib_address).range(1..=512));
+            if ui.button("nächste freie").clicked() {
+                st.lib_address = show.next_free_address(&st.patch, st.lib_universe, len).unwrap_or(1);
+            }
+        });
+        ui.end_row();
+        ui.label("Anzahl");
+        ui.add(egui::DragValue::new(&mut st.lib_count).range(1..=512));
+        ui.end_row();
+    });
+
+    let install = |st: &mut UiState| -> Result<String, String> {
+        config::install_qxf(&show.dir, &library::slug(&e.manufacturer, &e.model), &lib.text(e))
+            .map_err(|err| {
+                st.info = Some((false, err.clone()));
+                err
+            })
+    };
+
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Hinzufügen und patchen").clicked() {
+            if let Ok(id) = install(st) {
+                st.patch.push(PatchEntry {
+                    name: if st.lib_name.trim().is_empty() { e.model.clone() } else { st.lib_name.trim().to_string() },
+                    fixture: id.clone(),
+                    universe: st.lib_universe,
+                    address: st.lib_address.max(1),
+                    mode: (ft.modes.len() > 1).then(|| mode.name.clone()),
+                    count: st.lib_count.max(1),
+                    spacing: None,
+                });
+                let r = config::write_patch(&show.dir, &st.patch);
+                if r.is_ok() {
+                    st.patch_base = st.patch.clone();
+                }
+                let addr = st.lib_address;
+                st.lib_address = 0;
+                report(
+                    st,
+                    shared,
+                    r.map(|_| format!("„{}“ ab Adresse {addr} gepatcht (fixtures/{id}.qxf)", e.model)),
+                );
+            }
+        }
+        if ui.button("Nur zu den Fixtures hinzufügen").clicked() {
+            if let Ok(id) = install(st) {
+                report(st, shared, Ok(format!("fixtures/{id}.qxf angelegt")));
+            }
+        }
+    });
+    info_line(ui, st);
+    attribution(ui);
+}
+
+fn attribution(ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(format!(
+            "Fixture-Daten: QLC+ (qlcplus.org), Apache License 2.0 · {}",
+            library::VERSION.lines().next().unwrap_or("")
+        ))
+        .weak()
+        .small(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Einstellungen
+// ---------------------------------------------------------------------------
+
+fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &Shared, st: &mut UiState) {
+    ui.heading("Art-Net");
+    let mut ip_ok = true;
+    if let Some(s) = st.settings.as_mut() {
+        egui::Grid::new("netgrid").num_columns(2).show(ui, |ui| {
+            ui.label("IP-Adresse des Nodes");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut st.ip_text).desired_width(160.0));
+                match st.ip_text.trim().parse() {
+                    Ok(ip) => s.artnet_ip = ip,
+                    Err(_) => {
+                        ip_ok = false;
+                        ui.colored_label(RED, "ungültige IP");
+                    }
+                }
+                if ui.button("Broadcast").clicked() {
+                    st.ip_text = "255.255.255.255".into();
+                }
+            });
+            ui.end_row();
+            ui.label("Port");
+            ui.add(egui::DragValue::new(&mut s.artnet_port).range(1..=65535));
+            ui.end_row();
+            ui.label("Wiederholrate");
+            ui.add(egui::DragValue::new(&mut s.refresh_hz).range(1.0..=44.0).speed(0.5).suffix(" Hz"));
+            ui.end_row();
+            ui.label("MIDI-CCs als Werte");
+            ui.checkbox(&mut s.cc_input, "annehmen (für Fades per CC-Lane)");
+            ui.end_row();
+        });
+        ui.label(
+            RichText::new("Unicast an die Node-IP ist zuverlässiger als Broadcast, vor allem im WLAN.")
+                .weak()
+                .small(),
+        );
+
+        ui.add_space(8.0);
+        ui.heading("MIDI-Kanal → Universum / Block");
+        egui::Grid::new("midimap").striped(true).num_columns(5).show(ui, |ui| {
+            for h in ["MIDI", "aktiv", "Universum", "Block", "DMX"] {
+                ui.label(RichText::new(h).strong());
+            }
+            ui.end_row();
+            for ch in 0..16 {
+                ui.label(format!("Kanal {}", ch + 1));
+                let mut on = s.midi[ch].is_some();
+                if ui.checkbox(&mut on, "").changed() {
+                    s.midi[ch] = on.then_some(MidiTarget {
+                        universe: (ch / 4) as u16,
+                        block: (ch % 4) as u8,
+                    });
+                }
+                match s.midi[ch].as_mut() {
+                    Some(t) => {
+                        ui.add(egui::DragValue::new(&mut t.universe).range(0..=config::MAX_UNIVERSE));
+                        egui::ComboBox::from_id_salt(("blk", ch))
+                            .selected_text(format!("{}", t.block + 1))
+                            .width(50.0)
+                            .show_ui(ui, |ui| {
+                                for b in 0..4u8 {
+                                    ui.selectable_value(&mut t.block, b, format!("{}", b + 1));
+                                }
+                            });
+                        ui.label(format!(
+                            "{}–{}",
+                            t.first_slot() + 1,
+                            t.first_slot() + BLOCK_SIZE
+                        ));
+                    }
+                    None => {
+                        ui.label("");
+                        ui.label("");
+                        ui.label(RichText::new("aus").weak());
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    }
+
+    let dirty = st.settings != st.settings_base;
+    ui.horizontal_wrapped(|ui| {
+        if ui.add_enabled(dirty && ip_ok, egui::Button::new("Speichern")).clicked() {
+            if let Some(s) = st.settings.clone() {
+                let r = config::write_config(&show.dir, &s).map(|_| "config.txt gespeichert".to_string());
+                if r.is_ok() {
+                    st.settings_base = Some(s);
+                }
+                report(st, shared, r);
+            }
+        }
+        if ui.add_enabled(dirty, egui::Button::new("Verwerfen")).clicked() {
+            let s = show.settings();
+            st.ip_text = s.artnet_ip.to_string();
+            st.settings = Some(s.clone());
+            st.settings_base = Some(s);
+        }
+        if dirty {
+            ui.colored_label(YELLOW, "ungespeicherte Änderungen");
+        }
+    });
+    info_line(ui, st);
+
+    ui.add_space(10.0);
+    ui.heading("Darstellung");
+    ui.horizontal_wrapped(|ui| {
+        let mut scale = params.ui_scale.read().map(|v| *v).unwrap_or(1.3);
+        ui.label("Schriftgröße");
+        let r = ui.add(
+            egui::Slider::new(&mut scale, 0.75..=2.5)
+                .step_by(0.05)
+                .custom_formatter(|v, _| format!("{:.0} %", v * 100.0)),
+        );
+        // erst beim Loslassen anwenden, sonst springt das Layout unter der Maus
+        let mut changed = r.drag_stopped() || (r.changed() && !r.dragged());
+        for (lbl, v) in [("100 %", 1.0), ("130 %", 1.3), ("160 %", 1.6), ("200 %", 2.0)] {
+            if ui.button(lbl).clicked() {
+                scale = v;
+                changed = true;
+            }
+        }
+        if changed {
+            if let Ok(mut s) = params.ui_scale.write() {
+                *s = scale;
+            }
+        }
+    });
+    ui.label(
+        RichText::new("Fenstergröße: an der unteren rechten Ecke des Plugin-Fensters ziehen.")
+            .weak()
+            .small(),
+    );
+
+    ui.add_space(10.0);
+    ui.heading("Konfig-Ordner");
+    ui.horizontal_wrapped(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut st.dir_edit).desired_width(420.0));
+        if ui.button("Übernehmen").clicked() {
+            if let Ok(mut d) = params.config_dir.write() {
+                *d = st.dir_edit.trim().to_string();
+            }
+            shared.reload_request.store(true, Relaxed);
+        }
+        if ui.button("Standard").clicked() {
+            if let Ok(mut d) = params.config_dir.write() {
+                d.clear();
+            }
+            st.dir_edit = config::default_config_dir().display().to_string();
+            shared.reload_request.store(true, Relaxed);
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Ordner öffnen").clicked() {
+            open_path(&artnet::effective_dir(params));
+        }
+        if ui.button("Neu laden").clicked() {
+            shared.reload_request.store(true, Relaxed);
+        }
+        if ui.button("Alle auf Ruhewert").clicked() {
+            shared.reset_all_to_rest();
+        }
+        if ui.button("Reaper-Notennamen exportieren").clicked() {
+            let r = config::export_note_names(show).map(|p| format!("Notennamen gespeichert in {}", p.display()));
+            report(st, shared, r);
+        }
+    });
+
+    ui.add_space(10.0);
+    attribution(ui);
 }

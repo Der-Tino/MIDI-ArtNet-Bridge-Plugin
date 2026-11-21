@@ -1,14 +1,11 @@
 # Patch-Liste: welches Gerät liegt wo?
+# Am einfachsten im Plugin unter "Patch" bearbeiten – Handbearbeitung geht aber auch.
 #
 # Name | Fixture (Datei in fixtures/, ohne .txt/.qxf) | Universum | Startadresse
 #
 # Optionale weitere Spalten:
-#   | modus=8 Channel     Modus einer QLC+-Fixture (.qxf); auch ohne "modus=" möglich
+#   | modus=8 Channel     Modus einer QLC+-Fixture (.qxf)
 #   | anzahl=8            8 gleiche Geräte am Stück → "PAR 1" … "PAR 8"
 #   | abstand=10          Adressabstand zwischen ihnen (Standard: Kanalanzahl)
 
-Washer  | uking_wash_8ch  | 0 | 1
-PAR     | par_rgbwauv_8ch | 0 | 9  | anzahl=4
-
-# QLC+-Fixture direkt nutzen: .qxf-Datei in fixtures/ kopieren, dann z. B.
-# Washer QLC | meine_washer | 0 | 41 | modus=8 Channel
+Washer | uking_wash_8ch | 0 | 1

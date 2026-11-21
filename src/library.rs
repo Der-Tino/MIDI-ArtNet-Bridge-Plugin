@@ -23,6 +23,8 @@ pub struct LibEntry {
 pub struct Library {
     data: Vec<u8>,
     pub entries: Vec<LibEntry>,
+    /// Hersteller (alphabetisch) → Einträge (nach Modell sortiert)
+    pub groups: Vec<(String, Vec<usize>)>,
 }
 
 static LIB: OnceLock<Result<Library, String>> = OnceLock::new();
@@ -65,12 +67,48 @@ fn load(pack: &[u8]) -> Result<Library, String> {
         });
         pos = start + len;
     }
-    Ok(Library { data, entries })
+    let mut map: std::collections::BTreeMap<String, (String, Vec<usize>)> = Default::default();
+    for (i, e) in entries.iter().enumerate() {
+        let key = e.manufacturer.to_lowercase().replace(['_', '-'], " ");
+        map.entry(key)
+            .or_insert_with(|| (e.manufacturer.replace('_', " "), Vec::new()))
+            .1
+            .push(i);
+    }
+    let groups = map
+        .into_values()
+        .map(|(name, mut idx)| {
+            idx.sort_by_key(|&i| entries[i].model.to_lowercase());
+            (name, idx)
+        })
+        .collect();
+    Ok(Library { data, entries, groups })
 }
 
 impl Library {
     pub fn text(&self, e: &LibEntry) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.data[e.start..e.start + e.len])
+    }
+
+    /// Wie `search`, aber nach Hersteller gruppiert: (Gruppen-Index, Treffer)
+    pub fn search_grouped(&self, query: &str) -> Vec<(usize, Vec<usize>)> {
+        let words: Vec<String> = query
+            .to_lowercase()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        self.groups
+            .iter()
+            .enumerate()
+            .filter_map(|(gi, (_, idx))| {
+                let hits: Vec<usize> = idx
+                    .iter()
+                    .copied()
+                    .filter(|&i| words.iter().all(|w| self.entries[i].search.contains(w.as_str())))
+                    .collect();
+                (!hits.is_empty()).then_some((gi, hits))
+            })
+            .collect()
     }
 
     /// Alle Suchwörter müssen vorkommen (Hersteller, Modell oder Typ).

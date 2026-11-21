@@ -199,3 +199,122 @@ fn run(shared: Arc<Shared>, params: Arc<BridgeParams>, stop: Arc<AtomicBool>) {
         thread::sleep(TICK);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Node-Suche (ArtPoll) und lokale IP
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct NodeInfo {
+    pub ip: Ipv4Addr,
+    pub short_name: String,
+    pub long_name: String,
+}
+
+/// Über welche eigene IP würde der Rechner `target` erreichen?
+/// (Es wird nichts gesendet – das Betriebssystem wählt nur die Route.)
+pub fn local_ip_for(target: Ipv4Addr) -> Option<Ipv4Addr> {
+    let probe = if target.is_broadcast() || target.is_unspecified() {
+        Ipv4Addr::new(8, 8, 8, 8)
+    } else {
+        target
+    };
+    let s = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    s.connect((probe, 6454)).ok()?;
+    match s.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_unspecified() => Some(ip),
+        _ => None,
+    }
+}
+
+fn artpoll_packet() -> [u8; 14] {
+    let mut p = [0u8; 14];
+    p[..8].copy_from_slice(b"Art-Net\0");
+    p[8] = 0x00; // OpPoll 0x2000, little endian
+    p[9] = 0x20;
+    p[11] = 14; // ProtVer
+    p
+}
+
+fn cstr(b: &[u8]) -> String {
+    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    String::from_utf8_lossy(&b[..end]).trim().to_string()
+}
+
+pub fn parse_poll_reply(buf: &[u8]) -> Option<NodeInfo> {
+    if buf.len() < 108 || &buf[..8] != b"Art-Net\0" || buf[8] != 0x00 || buf[9] != 0x21 {
+        return None;
+    }
+    Some(NodeInfo {
+        ip: Ipv4Addr::new(buf[10], buf[11], buf[12], buf[13]),
+        short_name: cstr(&buf[26..44]),
+        long_name: cstr(&buf[44..108]),
+    })
+}
+
+/// Sucht ~2,5 s lang nach Art-Net-Nodes; Ergebnis landet in `shared.nodes`.
+pub fn start_discovery(shared: Arc<Shared>) {
+    if shared.discovery_running.swap(true, Relaxed) {
+        return;
+    }
+    if let Ok(mut n) = shared.nodes.lock() {
+        n.clear();
+    }
+    let _ = thread::Builder::new()
+        .name("dmx-bridge-artpoll".into())
+        .spawn(move || {
+            let status = match discover(&shared) {
+                Ok(0) => "Kein Node geantwortet. Ist der Node an und im selben Netz?".to_string(),
+                Ok(n) => format!("{n} Node(s) gefunden."),
+                Err(e) => format!("Suche fehlgeschlagen: {e}"),
+            };
+            if let Ok(mut s) = shared.discovery_status.lock() {
+                *s = status;
+            }
+            shared.discovery_running.store(false, Relaxed);
+        });
+}
+
+fn discover(shared: &Shared) -> std::io::Result<usize> {
+    // Antworten kommen laut Spezifikation an Port 6454; ist der belegt
+    // (z. B. QLC+ offen), mit freiem Port weitermachen.
+    let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 6454))
+        .or_else(|_| UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)))?;
+    sock.set_broadcast(true)?;
+    sock.set_read_timeout(Some(Duration::from_millis(200)))?;
+
+    let mut targets = vec![
+        Ipv4Addr::BROADCAST,
+        Ipv4Addr::new(2, 255, 255, 255),
+        Ipv4Addr::new(10, 255, 255, 255),
+    ];
+    if let Some(ip) = local_ip_for(Ipv4Addr::BROADCAST) {
+        let o = ip.octets();
+        targets.push(Ipv4Addr::new(o[0], o[1], o[2], 255));
+    }
+    let poll = artpoll_packet();
+    for t in &targets {
+        let _ = sock.send_to(&poll, (*t, 6454));
+    }
+
+    let own: Vec<Ipv4Addr> = local_ip_for(Ipv4Addr::BROADCAST).into_iter().collect();
+    let deadline = Instant::now() + Duration::from_millis(2500);
+    let mut buf = [0u8; 1024];
+    let mut found = 0;
+    while Instant::now() < deadline {
+        if let Ok((n, _)) = sock.recv_from(&mut buf) {
+            if let Some(node) = parse_poll_reply(&buf[..n]) {
+                if own.contains(&node.ip) {
+                    continue;
+                }
+                if let Ok(mut list) = shared.nodes.lock() {
+                    if !list.iter().any(|x| x.ip == node.ip) {
+                        list.push(node);
+                        found += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(found)
+}

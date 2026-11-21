@@ -1509,3 +1509,60 @@ pub fn install_qxf(dir: &Path, base_id: &str, text: &str) -> Result<String, Stri
     write_atomic(&fdir.join(format!("{id}.qxf")), text)?;
     Ok(id)
 }
+
+// ---------------------------------------------------------------------------
+// Oberfläche (global, nicht pro Projekt): oberflaeche.txt
+// ---------------------------------------------------------------------------
+
+pub const UI_SCALES: [f32; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UiPrefs {
+    pub scale: f32,
+    pub bpm: bool,
+}
+
+impl Default for UiPrefs {
+    fn default() -> Self {
+        Self { scale: 1.0, bpm: false }
+    }
+}
+
+pub fn read_ui_prefs(dir: &Path) -> UiPrefs {
+    let mut p = UiPrefs::default();
+    let Ok(text) = read_text(&dir.join("oberflaeche.txt")) else {
+        return p;
+    };
+    for (_, line) in clean_lines(&text) {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let v = v.trim().trim_end_matches('%').trim();
+        match k.trim().to_lowercase().as_str() {
+            "skalierung" | "scale" => {
+                if let Ok(x) = v.replace(',', ".").parse::<f32>() {
+                    let x = if x > 5.0 { x / 100.0 } else { x };
+                    // auf die nächste angebotene Stufe runden
+                    p.scale = UI_SCALES
+                        .iter()
+                        .copied()
+                        .min_by(|a, b| (a - x).abs().total_cmp(&(b - x).abs()))
+                        .unwrap_or(1.0);
+                }
+            }
+            "frequenz" | "frequency" => p.bpm = v.eq_ignore_ascii_case("bpm"),
+            _ => {}
+        }
+    }
+    p
+}
+
+pub fn write_ui_prefs(dir: &Path, p: &UiPrefs) -> Result<(), String> {
+    let text = format!(
+        "# DMX Bridge – Oberfläche (gilt für alle Projekte)\n\
+         skalierung = {:.0} %\n\
+         frequenz = {}\n",
+        p.scale * 100.0,
+        if p.bpm { "bpm" } else { "hz" }
+    );
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("oberflaeche.txt"), text).map_err(|e| e.to_string())
+}

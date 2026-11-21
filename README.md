@@ -145,16 +145,20 @@ gelb/rot an. Es stürzt deswegen nicht ab, und die restliche Konfiguration läuf
 
 ## GUI
 
-Das Fenster lässt sich an der unteren rechten Ecke größer ziehen; die Schriftgröße
-stellst du unter **Einstellungen → Darstellung** ein (75–250 %).
+Die Größe des ganzen Fensters wählst du oben rechts (50, 75, 100, 125, 150, 200 %) –
+alles skaliert gleichmäßig mit. Größe und Hz/BPM gelten für alle Projekte
+(`oberflaeche.txt` im Konfig-Ordner).
+
+> **Tippen in Eingabefelder geht nicht?** Reaper gibt die Tastatur sonst nicht an das
+> Plugin weiter: im FX-Fenster die Option **„Send all keyboard input to plugin“** einschalten.
 
 | Tab | Was |
 |---|---|
 | **Live** | Bühnenansicht, Fader pro Kanal, Konfig-Meldungen |
 | **Patch** | Geräte hinzufügen, entfernen, umsortieren; Fixture, Modus, Universum, Adresse, Anzahl |
 | **Fixtures** | eigene Fixtures anlegen und bearbeiten (Kanäle, Typen, Ruhewerte, Wertebereiche); QLC+-Fixtures als bearbeitbare Kopie |
-| **QLC+-Bibliothek** | alle ~1800 Fixtures aus QLC+ durchsuchen, Modus wählen, mit einem Klick patchen |
-| **Einstellungen** | Node-IP, Port, Rate, MIDI-Kanal → Universum/Block, Schriftgröße, Konfig-Ordner |
+| **QLC+ Bibliothek** | alle ~1800 Fixtures aus QLC+, nach Herstellern sortiert und durchsuchbar; Modus wählen, mit einem Klick patchen |
+| **Einstellungen** | Node-IP (mit Node-Suche per ArtPoll), Port, Rate, MIDI-Kanal → Universum/Block, Hz/BPM, Konfig-Ordner |
 
 Alles, was du im Plugin speicherst, landet in denselben Textdateien (vorherige Version
 jeweils als `.bak`). Handbearbeitung bleibt möglich.

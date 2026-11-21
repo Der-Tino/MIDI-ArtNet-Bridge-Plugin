@@ -1,4 +1,4 @@
-//! GUI: Live-Vorschau, Patch-Editor, Fixture-Editor, QLC+-Bibliothek, Einstellungen.
+//! GUI: Live-Vorschau, Patch-Editor, Fixture-Editor, QLC+ Bibliothek, Einstellungen.
 
 use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
@@ -6,19 +6,24 @@ use std::sync::Arc;
 
 use nih_plug::prelude::*;
 use nih_plug_egui::egui::{self, Color32, RichText};
-use nih_plug_egui::resizable_window::ResizableWindow;
 use nih_plug_egui::{create_egui_editor, widgets::ParamSlider};
 
 use crate::artnet;
 use crate::config::{
     self, Capability, ChanKind, Effect, FixtureChannel, FixtureType, Level, MidiTarget,
-    PatchEntry, PatchedFixture, Settings, Show, BLOCK_SIZE,
+    PatchEntry, PatchedFixture, Settings, Show, UiPrefs, BLOCK_SIZE, UI_SCALES,
 };
 use crate::library;
 use crate::preview;
 use crate::qxf;
 use crate::shared::{self, Shared, MAX_BUFS};
 use crate::BridgeParams;
+
+/// Fenstergröße bei 100 % (logische Pixel)
+pub const BASE_W: f32 = 1000.0;
+pub const BASE_H: f32 = 700.0;
+/// egui-Standardschrift ist recht klein – 100 % entspricht 125 % davon
+const BASE_FONT: f32 = 1.25;
 
 const RED: Color32 = Color32::from_rgb(235, 90, 80);
 const YELLOW: Color32 = Color32::from_rgb(235, 195, 70);
@@ -67,6 +72,7 @@ struct UiState {
     rate: f32,
 
     show_ptr: usize,
+    prefs: UiPrefs,
     bpm: bool,
     /// Strobe-Rechner: (Gerät, Kanal) → Wunschfrequenz in Hz
     strobe_target: std::collections::HashMap<(usize, usize), f32>,
@@ -85,7 +91,7 @@ struct UiState {
 
     lib_query: String,
     lib_last_query: Option<String>,
-    lib_results: Vec<usize>,
+    lib_hits: Vec<(usize, Vec<usize>)>,
     lib_sel: Option<usize>,
     lib_parsed: Option<(usize, Result<FixtureType, String>)>,
     lib_mode: usize,
@@ -100,24 +106,21 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
     create_egui_editor(
         egui_state,
         UiState::default(),
-        |_ctx: &egui::Context, _st: &mut UiState| {},
+        |ctx: &egui::Context, _st: &mut UiState| {
+            // Ubuntu-Light (Standard) hat z. B. keine Pfeile → Hack als Ersatzschrift
+            let mut fonts = egui::FontDefinitions::default();
+            if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                list.push("Hack".to_owned());
+            }
+            ctx.set_fonts(fonts);
+        },
         move |ctx: &egui::Context, setter: &ParamSetter, st: &mut UiState| {
             ctx.request_repaint();
             let now = ctx.input(|i| i.time);
 
-            // Skalierung
-            let scale = params
-                .ui_scale
-                .read()
-                .map(|v| *v)
-                .unwrap_or(1.3)
-                .clamp(0.6, 3.0);
-            if (scale - st.applied_scale).abs() > 0.001 {
-                apply_scale(ctx, scale);
-                st.applied_scale = scale;
-            }
-
             if !st.initialized {
+                st.prefs = config::read_ui_prefs(&artnet::effective_dir(&params));
+                request_window(&params, st.prefs.scale);
                 st.dir_edit = artnet::effective_dir(&params).display().to_string();
                 st.rate_t = now;
                 st.rate_pkts = shared.packets_sent.load(Relaxed);
@@ -133,16 +136,19 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
                 st.rate_t = now;
             }
 
-            st.bpm = params.freq_bpm.read().map(|v| *v).unwrap_or(false);
+            st.bpm = st.prefs.bpm;
+            let font_scale = st.prefs.scale * BASE_FONT;
+            if (font_scale - st.applied_scale).abs() > 0.001 {
+                apply_scale(ctx, font_scale);
+                st.applied_scale = font_scale;
+            }
             let show: Option<Arc<Show>> = shared.show.lock().ok().and_then(|g| g.clone());
             if let Some(s) = &show {
                 sync_with_show(st, s);
             }
             let master = master_value(&params);
 
-            ResizableWindow::new("dmx-bridge-main")
-                .min_size(egui::vec2(640.0, 420.0))
-                .show(ctx, &params.editor_state, |ui| {
+            egui::CentralPanel::default().show(ctx, |ui| {
                     header(ui, &params, &shared, setter, show.as_deref(), st);
                     ui.add_space(4.0);
                     tab_bar(ui, st);
@@ -152,6 +158,11 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
                         ui.label("Lade Konfiguration …");
                         return;
                     };
+                    if st.tab == Tab::Library {
+                        // eigene Scrollbereiche (Hersteller-Liste und Details)
+                        library_tab(ui, show, &shared, st);
+                        return;
+                    }
                     egui::ScrollArea::vertical()
                         .id_salt("main-scroll")
                         .auto_shrink([false, false])
@@ -159,10 +170,10 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
                             Tab::Live => live_tab(ui, show, &shared, master, st),
                             Tab::Patch => patch_tab(ui, show, &shared, st),
                             Tab::Fixtures => fixtures_tab(ui, show, &shared, st),
-                            Tab::Library => library_tab(ui, show, &shared, st),
+                            Tab::Library => {}
                             Tab::Settings => settings_tab(ui, show, &params, &shared, st),
                         });
-                });
+            });
         },
     )
 }
@@ -307,15 +318,22 @@ fn open_path(p: &Path) {
     let _ = std::process::Command::new(cmd).arg(p).spawn();
 }
 
+fn request_window(params: &BridgeParams, scale: f32) {
+    let want = ((BASE_W * scale).round() as u32, (BASE_H * scale).round() as u32);
+    if params.editor_state.size() != want {
+        params.editor_state.set_requested_size(want);
+    }
+}
+
 fn header(
     ui: &mut egui::Ui,
     params: &BridgeParams,
     shared: &Shared,
     setter: &ParamSetter,
     show: Option<&Show>,
-    st: &UiState,
+    st: &mut UiState,
 ) {
-    ui.horizontal_wrapped(|ui| {
+    ui.horizontal(|ui| {
         ui.heading("DMX Bridge");
         ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak());
         ui.add_space(16.0);
@@ -323,6 +341,25 @@ fn header(
         ui.add(ParamSlider::for_param(&params.master, setter));
         toggle(ui, setter, &params.blackout, "Blackout");
         toggle(ui, setter, &params.output_enabled, "Art-Net Ausgabe");
+
+        // Skalierung wie bei Waves: feste Stufen, oben rechts
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut scale = st.prefs.scale;
+            egui::ComboBox::from_id_salt("scale")
+                .selected_text(format!("{:.0} %", scale * 100.0))
+                .width(70.0)
+                .show_ui(ui, |ui| {
+                    for s in UI_SCALES {
+                        ui.selectable_value(&mut scale, s, format!("{:.0} %", s * 100.0));
+                    }
+                });
+            ui.label("Größe");
+            if scale != st.prefs.scale {
+                st.prefs.scale = scale;
+                let _ = config::write_ui_prefs(&artnet::effective_dir(params), &st.prefs);
+                request_window(params, scale);
+            }
+        });
     });
 
     let target = show
@@ -335,7 +372,7 @@ fn header(
     let errors = shared.send_errors.load(Relaxed);
     ui.horizontal_wrapped(|ui| {
         let rate_col = if st.rate > 0.5 { GREEN } else { YELLOW };
-        ui.label(format!("Art-Net → {target}"));
+        ui.label(format!("Art-Net an {target}"));
         ui.label("·");
         ui.colored_label(rate_col, format!("{:.0} Pakete/s", st.rate));
         ui.label("·");
@@ -410,12 +447,12 @@ fn tab_bar(ui: &mut egui::Ui, st: &mut UiState) {
         (Tab::Live, "Live", false),
         (Tab::Patch, "Patch", patch_dirty),
         (Tab::Fixtures, "Fixtures", fx_dirty),
-        (Tab::Library, "QLC+-Bibliothek", false),
+        (Tab::Library, "QLC+ Bibliothek", false),
         (Tab::Settings, "Einstellungen", settings_dirty),
     ];
     ui.horizontal_wrapped(|ui| {
         for (t, label, dirty) in tabs {
-            let text = if dirty { format!("{label} ●") } else { label.to_string() };
+            let text = if dirty { format!("{label} •") } else { label.to_string() };
             if ui
                 .selectable_label(st.tab == t, RichText::new(text).strong())
                 .clicked()
@@ -441,7 +478,7 @@ fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32, st: &m
     }
 
     if show.fixtures.is_empty() {
-        ui.label("Keine Geräte gepatcht – im Tab „Patch“ oder „QLC+-Bibliothek“ hinzufügen.");
+        ui.label("Keine Geräte gepatcht – im Tab „Patch“ oder „QLC+ Bibliothek“ hinzufügen.");
         return;
     }
     let t = ui.input(|i| i.time);
@@ -677,7 +714,7 @@ fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) 
     });
     info_line(ui, st);
     ui.label(
-        RichText::new("Neue Gerätetypen findest du im Tab „QLC+-Bibliothek“ oder legst sie unter „Fixtures“ an.")
+        RichText::new("Neue Gerätetypen findest du im Tab „QLC+ Bibliothek“ oder legst sie unter „Fixtures“ an.")
             .weak()
             .small(),
     );
@@ -760,10 +797,10 @@ fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) 
                 ui.label(dmx);
 
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(i > 0, egui::Button::new("↑")).clicked() {
+                    if ui.add_enabled(i > 0, egui::Button::new("⏶")).clicked() {
                         action = Some(RowAction::Up(i));
                     }
-                    if ui.add_enabled(i + 1 < n, egui::Button::new("↓")).clicked() {
+                    if ui.add_enabled(i + 1 < n, egui::Button::new("⏷")).clicked() {
                         action = Some(RowAction::Down(i));
                     }
                     if ui.button("Entfernen").clicked() {
@@ -969,16 +1006,16 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
                 ui.add(egui::DragValue::new(&mut ch.rest).range(0..=255));
                 let caps_btn = format!(
                     "{} Bereiche ({})",
-                    if fx.open_caps[c] { "▼" } else { "▶" },
+                    if fx.open_caps[c] { "⏷" } else { "⏵" },
                     ch.caps.len()
                 );
                 if ui.button(caps_btn).clicked() {
                     fx.open_caps[c] = !fx.open_caps[c];
                 }
-                if ui.add_enabled(c > 0, egui::Button::new("↑")).clicked() {
+                if ui.add_enabled(c > 0, egui::Button::new("⏶")).clicked() {
                     action = Some(RowAction::Up(c));
                 }
-                if ui.add_enabled(c + 1 < n, egui::Button::new("↓")).clicked() {
+                if ui.add_enabled(c + 1 < n, egui::Button::new("⏷")).clicked() {
                     action = Some(RowAction::Down(c));
                 }
                 if ui.add_enabled(n > 1, egui::Button::new("Entfernen")).clicked() {
@@ -1138,7 +1175,7 @@ fn caps_editor(ui: &mut egui::Ui, ch: &mut FixtureChannel, bpm: bool) {
 }
 
 // ---------------------------------------------------------------------------
-// QLC+-Bibliothek
+// QLC+ Bibliothek
 // ---------------------------------------------------------------------------
 
 fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) {
@@ -1155,49 +1192,99 @@ fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState
         ui.add(
             egui::TextEdit::singleline(&mut st.lib_query)
                 .hint_text("Hersteller, Modell oder Typ – z. B. „eurolite par“")
-                .desired_width(360.0),
+                .desired_width(320.0),
         );
+        if !st.lib_query.is_empty() && ui.button("Leeren").clicked() {
+            st.lib_query.clear();
+        }
     });
-    if st.lib_last_query.as_deref() != Some(st.lib_query.as_str()) {
-        st.lib_results = lib.search(&st.lib_query, 500);
-        st.lib_last_query = Some(st.lib_query.clone());
+    let query = st.lib_query.trim().to_string();
+    if st.lib_last_query.as_deref() != Some(query.as_str()) {
+        st.lib_hits = if query.is_empty() {
+            Vec::new()
+        } else {
+            lib.search_grouped(&query)
+        };
+        st.lib_last_query = Some(query.clone());
     }
+    let searching = !query.is_empty();
+    let total: usize = if searching {
+        st.lib_hits.iter().map(|(_, h)| h.len()).sum()
+    } else {
+        lib.entries.len()
+    };
     ui.label(
-        RichText::new(format!(
-            "{} Treffer von {} Fixtures{}",
-            st.lib_results.len(),
-            lib.entries.len(),
-            if st.lib_results.len() >= 500 { " (Suche verfeinern)" } else { "" }
-        ))
+        RichText::new(if searching {
+            format!("{total} Treffer bei {} Herstellern", st.lib_hits.len())
+        } else {
+            format!("{} Hersteller · {} Fixtures", lib.groups.len(), lib.entries.len())
+        })
         .weak(),
     );
+    ui.separator();
 
-    let row_h = ui.style().spacing.interact_size.y;
+    let height = ui.available_height();
     let mut clicked: Option<usize> = None;
-    let sel = st.lib_sel;
-    egui::ScrollArea::vertical()
-        .id_salt("libresults")
-        .max_height(row_h * 10.0)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            for &i in &st.lib_results {
-                let e = &lib.entries[i];
-                if ui
-                    .selectable_label(sel == Some(i), format!("{} – {}   ({})", e.manufacturer, e.model, e.kind))
-                    .clicked()
-                {
-                    clicked = Some(i);
+    ui.columns(2, |cols| {
+        // ---- links: Hersteller-Ordner ----
+        egui::ScrollArea::vertical()
+            .id_salt("lib-tree")
+            .max_height(height)
+            .auto_shrink([false, false])
+            .show(&mut cols[0], |ui| {
+                let force_open = searching && total <= 150;
+                let groups: Vec<(usize, &[usize])> = if searching {
+                    st.lib_hits.iter().map(|(g, h)| (*g, h.as_slice())).collect()
+                } else {
+                    lib.groups.iter().enumerate().map(|(g, (_, h))| (g, h.as_slice())).collect()
+                };
+                if searching && groups.is_empty() {
+                    ui.label("Nichts gefunden.");
                 }
-            }
-        });
+                for (gi, hits) in groups {
+                    let name = &lib.groups[gi].0;
+                    ui.push_id(("manu", gi), |ui| {
+                        egui::CollapsingHeader::new(format!("{name}  ({})", hits.len()))
+                            .open(if force_open { Some(true) } else { None })
+                            .show(ui, |ui| {
+                                for &i in hits {
+                                    let e = &lib.entries[i];
+                                    let label = if e.kind.is_empty() {
+                                        e.model.clone()
+                                    } else {
+                                        format!("{}   ({})", e.model, e.kind)
+                                    };
+                                    if ui.selectable_label(st.lib_sel == Some(i), label).clicked() {
+                                        clicked = Some(i);
+                                    }
+                                }
+                            });
+                    });
+                }
+            });
+
+        // ---- rechts: Details + Patchen ----
+        egui::ScrollArea::vertical()
+            .id_salt("lib-detail")
+            .max_height(height)
+            .auto_shrink([false, false])
+            .show(&mut cols[1], |ui| library_detail(ui, lib, show, shared, st));
+    });
     if let Some(i) = clicked {
         st.lib_sel = Some(i);
         st.info = None;
     }
-    ui.separator();
+}
 
+fn library_detail(
+    ui: &mut egui::Ui,
+    lib: &'static library::Library,
+    show: &Show,
+    shared: &Shared,
+    st: &mut UiState,
+) {
     let Some(i) = st.lib_sel else {
-        ui.label("Fixture aus der Liste wählen.");
+        ui.label("Links einen Hersteller aufklappen und ein Fixture wählen.");
         attribution(ui);
         return;
     };
@@ -1219,20 +1306,19 @@ fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState
         None => return,
     };
 
-    ui.label(RichText::new(format!("{} {}", e.manufacturer, e.model)).heading());
+    ui.label(RichText::new(format!("{} {}", e.manufacturer.replace('_', " "), e.model)).heading());
     ui.label(RichText::new(format!("{} · {} Modi", e.kind, ft.modes.len())).weak());
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Modus:");
-        for (mi, m) in ft.modes.iter().enumerate() {
-            if ui
-                .selectable_label(st.lib_mode == mi, format!("{} ({} Kan.)", m.name, m.channels.len()))
-                .clicked()
-            {
-                st.lib_mode = mi;
-                st.lib_address = 0;
-            }
+    ui.add_space(4.0);
+    ui.label("Modus:");
+    for (mi, m) in ft.modes.iter().enumerate() {
+        if ui
+            .selectable_label(st.lib_mode == mi, format!("{} ({} Kanäle)", m.name, m.channels.len()))
+            .clicked()
+        {
+            st.lib_mode = mi;
+            st.lib_address = 0;
         }
-    });
+    }
     let mode = &ft.modes[st.lib_mode.min(ft.modes.len() - 1)];
     let len = mode.channels.len() * st.lib_count.max(1);
     if st.lib_address == 0 {
@@ -1246,7 +1332,7 @@ fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState
     ui.add_space(4.0);
     egui::Grid::new("libpatch").num_columns(2).show(ui, |ui| {
         ui.label("Name im Patch");
-        ui.add(egui::TextEdit::singleline(&mut st.lib_name).desired_width(240.0));
+        ui.add(egui::TextEdit::singleline(&mut st.lib_name).desired_width(220.0));
         ui.end_row();
         ui.label("Universum");
         if ui.add(egui::DragValue::new(&mut st.lib_universe).range(0..=config::MAX_UNIVERSE)).changed() {
@@ -1274,37 +1360,36 @@ fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState
             })
     };
 
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Hinzufügen und patchen").clicked() {
-            if let Ok(id) = install(st) {
-                st.patch.push(PatchEntry {
-                    name: if st.lib_name.trim().is_empty() { e.model.clone() } else { st.lib_name.trim().to_string() },
-                    fixture: id.clone(),
-                    universe: st.lib_universe,
-                    address: st.lib_address.max(1),
-                    mode: (ft.modes.len() > 1).then(|| mode.name.clone()),
-                    count: st.lib_count.max(1),
-                    spacing: None,
-                });
-                let r = config::write_patch(&show.dir, &st.patch);
-                if r.is_ok() {
-                    st.patch_base = st.patch.clone();
-                }
-                let addr = st.lib_address;
-                st.lib_address = 0;
-                report(
-                    st,
-                    shared,
-                    r.map(|_| format!("„{}“ ab Adresse {addr} gepatcht (fixtures/{id}.qxf)", e.model)),
-                );
+    ui.add_space(4.0);
+    if ui.button("Hinzufügen und patchen").clicked() {
+        if let Ok(id) = install(st) {
+            st.patch.push(PatchEntry {
+                name: if st.lib_name.trim().is_empty() { e.model.clone() } else { st.lib_name.trim().to_string() },
+                fixture: id.clone(),
+                universe: st.lib_universe,
+                address: st.lib_address.max(1),
+                mode: (ft.modes.len() > 1).then(|| mode.name.clone()),
+                count: st.lib_count.max(1),
+                spacing: None,
+            });
+            let r = config::write_patch(&show.dir, &st.patch);
+            if r.is_ok() {
+                st.patch_base = st.patch.clone();
             }
+            let addr = st.lib_address;
+            st.lib_address = 0;
+            report(
+                st,
+                shared,
+                r.map(|_| format!("„{}“ ab Adresse {addr} gepatcht (fixtures/{id}.qxf)", e.model)),
+            );
         }
-        if ui.button("Nur zu den Fixtures hinzufügen").clicked() {
-            if let Ok(id) = install(st) {
-                report(st, shared, Ok(format!("fixtures/{id}.qxf angelegt")));
-            }
+    }
+    if ui.button("Nur zu den Fixtures hinzufügen").clicked() {
+        if let Ok(id) = install(st) {
+            report(st, shared, Ok(format!("fixtures/{id}.qxf angelegt")));
         }
-    });
+    }
     info_line(ui, st);
     attribution(ui);
 }
@@ -1325,7 +1410,81 @@ fn attribution(ui: &mut egui::Ui) {
 // Einstellungen
 // ---------------------------------------------------------------------------
 
-fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &Shared, st: &mut UiState) {
+fn st_ip(text: &str) -> Option<std::net::Ipv4Addr> {
+    text.trim().parse().ok()
+}
+
+/// Erklärt, welche IP wohin gehört, und bietet die Node-Suche an.
+fn network_help(ui: &mut egui::Ui, shared: &Arc<Shared>, target: Option<std::net::Ipv4Addr>, ip_text: &mut String) {
+    ui.label(
+        RichText::new(
+            "Hier gehört die IP des Art-Net-Nodes hin (z. B. deines Pknight), nicht die deines Rechners. \
+             255.255.255.255 = Broadcast: geht an alle Geräte im Netz – funktioniert meistens, \
+             Unicast an die Node-IP ist aber zuverlässiger.",
+        )
+        .small(),
+    );
+    if let Some(t) = target {
+        match artnet::local_ip_for(t) {
+            Some(own) => {
+                let same_net = t.is_broadcast() || own.octets()[..3] == t.octets()[..3];
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!("Dein Rechner sendet von {own}")).small());
+                    if !same_net {
+                        ui.colored_label(
+                            YELLOW,
+                            RichText::new(format!(
+                                "– Node {t} liegt in einem anderen Netz. Der Node braucht eine IP wie {}.{}.{}.x",
+                                own.octets()[0],
+                                own.octets()[1],
+                                own.octets()[2]
+                            ))
+                            .small(),
+                        );
+                    }
+                });
+            }
+            None => {
+                ui.colored_label(YELLOW, RichText::new("Kein Netzwerk gefunden.").small());
+            }
+        }
+    }
+
+    ui.horizontal_wrapped(|ui| {
+        let running = shared.discovery_running.load(Relaxed);
+        if ui
+            .add_enabled(!running, egui::Button::new(if running { "Suche läuft …" } else { "Nodes im Netz suchen" }))
+            .clicked()
+        {
+            artnet::start_discovery(shared.clone());
+        }
+        if let Ok(s) = shared.discovery_status.lock() {
+            if !running && !s.is_empty() {
+                ui.label(RichText::new(s.as_str()).small());
+            }
+        }
+    });
+    let nodes = shared.nodes.lock().map(|n| n.clone()).unwrap_or_default();
+    for n in nodes {
+        ui.horizontal_wrapped(|ui| {
+            let name = if n.long_name.is_empty() { n.short_name.clone() } else { n.long_name.clone() };
+            ui.label(RichText::new(format!("{}  ·  {name}", n.ip)).monospace());
+            if ui.button("übernehmen").clicked() {
+                *ip_text = n.ip.to_string();
+            }
+        });
+    }
+    ui.label(
+        RichText::new(
+            "Tippen in Eingabefelder geht nicht? Reaper gibt die Tastatur sonst nicht ans Plugin weiter: \
+             im FX-Fenster die Option „Send all keyboard input to plugin“ einschalten.",
+        )
+        .weak()
+        .small(),
+    );
+}
+
+fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &Arc<Shared>, st: &mut UiState) {
     ui.heading("Art-Net");
     let mut ip_ok = true;
     if let Some(s) = st.settings.as_mut() {
@@ -1355,11 +1514,7 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
             ui.checkbox(&mut s.cc_input, "annehmen (für Fades per CC-Lane)");
             ui.end_row();
         });
-        ui.label(
-            RichText::new("Unicast an die Node-IP ist zuverlässiger als Broadcast, vor allem im WLAN.")
-                .weak()
-                .small(),
-        );
+        network_help(ui, shared, st_ip(&st.ip_text), &mut st.ip_text);
 
         ui.add_space(8.0);
         ui.heading("MIDI-Kanal → Universum / Block");
@@ -1431,42 +1586,19 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
     ui.add_space(10.0);
     ui.heading("Darstellung");
     ui.horizontal_wrapped(|ui| {
-        let mut scale = params.ui_scale.read().map(|v| *v).unwrap_or(1.3);
-        ui.label("Schriftgröße");
-        let r = ui.add(
-            egui::Slider::new(&mut scale, 0.75..=2.5)
-                .step_by(0.05)
-                .custom_formatter(|v, _| format!("{:.0} %", v * 100.0)),
-        );
-        // erst beim Loslassen anwenden, sonst springt das Layout unter der Maus
-        let mut changed = r.drag_stopped() || (r.changed() && !r.dragged());
-        for (lbl, v) in [("100 %", 1.0), ("130 %", 1.3), ("160 %", 1.6), ("200 %", 2.0)] {
-            if ui.button(lbl).clicked() {
-                scale = v;
-                changed = true;
-            }
-        }
-        if changed {
-            if let Ok(mut s) = params.ui_scale.write() {
-                *s = scale;
-            }
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
         ui.label("Frequenzen als");
-        let mut bpm = st.bpm;
+        let mut bpm = st.prefs.bpm;
         let a = ui.radio_value(&mut bpm, false, "Hz").changed();
         let b = ui.radio_value(&mut bpm, true, "BPM").changed();
         if a || b {
-            if let Ok(mut v) = params.freq_bpm.write() {
-                *v = bpm;
-            }
+            st.prefs.bpm = bpm;
             st.bpm = bpm;
+            let _ = config::write_ui_prefs(&artnet::effective_dir(params), &st.prefs);
         }
         ui.label(RichText::new("(1 Hz = 60 BPM; Dateien speichern immer Hz)").weak().small());
     });
     ui.label(
-        RichText::new("Fenstergröße: an der unteren rechten Ecke des Plugin-Fensters ziehen.")
+        RichText::new("Größe: oben rechts (50–200 %). Gilt wie Hz/BPM für alle Projekte (oberflaeche.txt).")
             .weak()
             .small(),
     );

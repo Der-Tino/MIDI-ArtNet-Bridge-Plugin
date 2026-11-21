@@ -48,6 +48,11 @@ pub struct Shared {
     /// nur GUI / Art-Net-Thread, nie Audio-Thread
     pub show: Mutex<Option<Arc<Show>>>,
     pub net_error: Mutex<Option<String>>,
+
+    /// Node-Suche (ArtPoll)
+    pub nodes: Mutex<Vec<crate::artnet::NodeInfo>>,
+    pub discovery_status: Mutex<String>,
+    pub discovery_running: AtomicBool,
 }
 
 impl Default for Shared {
@@ -67,6 +72,9 @@ impl Default for Shared {
             event_count: AtomicU32::new(0),
             show: Mutex::new(None),
             net_error: Mutex::new(None),
+            nodes: Mutex::new(Vec::new()),
+            discovery_status: Mutex::new(String::new()),
+            discovery_running: AtomicBool::new(false),
         }
     }
 }

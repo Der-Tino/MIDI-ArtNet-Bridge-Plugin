@@ -187,6 +187,19 @@ cargo xtask bundle-universal dmx_bridge --release
 Output: `target/bundled/`. GitHub Actions builds Windows, macOS and Linux on every push;
 *Actions → Build → Run workflow* with a release tag (e.g. `v0.5.0`) creates a release.
 
+## License
+
+MIDI ArtNet Bridge – Copyright (C) 2026 Der-Tino and contributors
+
+This program is free software: you can redistribute it and/or modify it under the terms
+of the **GNU General Public License** as published by the Free Software Foundation,
+either **version 3** of the License, or (at your option) any later version.
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY.
+See [`LICENSE`](LICENSE) for the full text.
+
+In short: everyone may use, study, modify and share it for free. Anyone who distributes
+it – modified or not – must do so under the same license and include the source code.
+
 ## Third-party components
 
 | Component | License | Notes |

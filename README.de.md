@@ -215,3 +215,16 @@ Die Fixture-Definitionen stammen aus dem Projekt [QLC+](https://www.qlcplus.org)
 git clone --depth 1 https://github.com/mcallegari/qlcplus /tmp/qlcplus
 python3 tools/update_library.py /tmp/qlcplus
 ```
+
+## Lizenz
+
+MIDI ArtNet Bridge – Copyright (C) 2026 Der-Tino und Mitwirkende
+
+Freie Software unter der **GNU General Public License, Version 3** oder (nach deiner Wahl)
+einer späteren Version, siehe [`LICENSE`](LICENSE). Kurz gesagt: Jeder darf das Plugin
+gratis nutzen, verändern und weitergeben. Wer es weitergibt – verändert oder nicht –, muss
+es unter derselben Lizenz und mit Quellcode tun. Ohne jede Gewährleistung.
+
+Eingebundene Fremdkomponenten behalten ihre eigenen, GPL-kompatiblen Lizenzen:
+QLC+-Fixtures (Apache 2.0), NIH-plug (ISC), vst3-sys (GPLv3),
+`vendor/nih_plug_egui` (ISC), `vendor/egui-baseview` (MIT).

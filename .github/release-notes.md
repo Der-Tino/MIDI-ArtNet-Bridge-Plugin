@@ -18,4 +18,4 @@ MIDI notes in your DAW → DMX over Art-Net, as a CLAP/VST3 plugin.
 - In Reaper: put the plugin on your light MIDI track and **disable anticipative FX** for that track.
   If you cannot type into fields, enable **“Send all keyboard input to plugin”** in the FX window.
 
-Full documentation: [README](REPO_URL#readme)
+Full documentation: [README](REPO_URL#readme) · License: GPL-3.0-or-later

@@ -484,14 +484,9 @@ fn header(
     st: &mut UiState,
 ) {
     ui.horizontal_top(|ui| {
-        // full wordmark when there is room, otherwise just the mark
-        let r = if ui.available_width() >= 860.0 {
-            image(ui, "lockup", LOCKUP_Z, 58.0)
-        } else {
-            image(ui, "logo", LOGO_Z, 58.0)
-        };
-        let _ = r.on_hover_text(concat!("MIDI ArtNet Bridge v", env!("CARGO_PKG_VERSION")));
-        ui.add_space(14.0);
+        let _ = image(ui, "logo", LOGO_Z, 72.0)
+            .on_hover_text(concat!("MIDI ArtNet Bridge v", env!("CARGO_PKG_VERSION")));
+        ui.add_space(12.0);
         ui.vertical(|ui| header_rows(ui, params, shared, setter, show, st));
     });
 }
@@ -505,6 +500,9 @@ fn header_rows(
     st: &mut UiState,
 ) {
     ui.horizontal(|ui| {
+        ui.heading("DMX Bridge");
+        ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak());
+        ui.add_space(16.0);
         ui.label("Master");
         ui.add(ParamSlider::for_param(&params.master, setter));
         toggle(ui, setter, &params.blackout, "Blackout");
@@ -564,8 +562,6 @@ fn header_rows(
     let errors = shared.send_errors.load(Relaxed);
     ui.horizontal_wrapped(|ui| {
         let rate_col = if st.rate > 0.5 { GREEN } else { YELLOW };
-        ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak());
-        ui.label("·");
         ui.label(tf!("Art-Net an {target}", "Art-Net to {target}"));
         ui.label("·");
         ui.colored_label(rate_col, tf!("{:.0} Pakete/s", "{:.0} packets/s", st.rate));
@@ -2180,13 +2176,15 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
 
     ui.add_space(6.0);
     section(ui, t("Über", "About"), |ui| {
-        ui.horizontal(|ui| {
-            image(ui, "logo", LOGO_Z, 56.0);
-            ui.vertical(|ui| {
-                ui.label(RichText::new(concat!("MIDI ArtNet Bridge v", env!("CARGO_PKG_VERSION"))).strong());
-                ui.label(RichText::new("MIDI → DMX · Art-Net · CLAP / VST3 · GPL-3.0").weak());
-            });
-        });
+        let _ = image(ui, "lockup", LOCKUP_Z, 52.0);
+        ui.label(
+            RichText::new(concat!(
+                "v",
+                env!("CARGO_PKG_VERSION"),
+                " · MIDI → DMX · Art-Net · CLAP / VST3 · GPL-3.0"
+            ))
+            .weak(),
+        );
         ui.horizontal_wrapped(|ui| {
             if ui
                 .button(t("Projekt auf GitHub", "Project on GitHub"))

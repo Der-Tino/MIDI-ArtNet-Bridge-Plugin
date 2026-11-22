@@ -107,9 +107,13 @@ where
                 let setter = ParamSetter::new(context.as_ref());
 
                 // If the window was requested to resize
-                if let Some(new_size) = egui_state.requested_size.swap(None) {
-                    // Ask the plugin host to resize to self.size()
-                    if context.request_resize() {
+                if let Some(new_size) = egui_state.requested_size.load() {
+                    // Der Host fragt bei request_resize() synchron self.size() ab – die
+                    // angeforderte Größe muss also noch gesetzt sein (Original löschte sie
+                    // vorher, der Host bekam die alte Größe und das Fenster blieb gleich).
+                    let accepted = context.request_resize();
+                    egui_state.requested_size.store(None);
+                    if accepted {
                         // Fenster in logischen Pixeln anpassen; die physische Größe
                         // meldet baseview danach per Resized-Event (Original übergab
                         // hier logische Werte als physische → falsche Größe bei DPI ≠ 100 %).

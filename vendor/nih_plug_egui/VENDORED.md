@@ -11,3 +11,4 @@ Lizenz: ISC (siehe LICENSE).
   (holt den Tastaturfokus ins Plugin, sobald ein Eingabefeld aktiv ist).
 - Fenstergrößenänderung übergibt keine logischen Werte mehr als physische Pixel.
 - `EguiState::set_size` öffentlich; `set_ui_zoom`/`ui_zoom` werden re-exportiert.
+- Größenänderung: angeforderte Größe bleibt gesetzt, bis der Host sie über size() abgefragt hat.

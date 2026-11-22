@@ -437,7 +437,9 @@ where
                 } => {
                     self.update_modifiers(modifiers);
 
-                    let pos = pos2(position.x as f32, position.y as f32);
+                    // baseview liefert logische Pixel (physisch / System-Skalierung);
+                    // egui braucht Punkte → zusätzlich durch den Oberflächen-Zoom teilen.
+                    let pos = pos2(position.x as f32 / self.zoom, position.y as f32 / self.zoom);
                     self.pointer_pos_in_points = Some(pos);
                     self.egui_input.events.push(egui::Event::PointerMoved(pos));
                 }

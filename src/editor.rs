@@ -587,7 +587,11 @@ fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32, st: &m
                                 let target = st.strobe_target.entry((i, c)).or_insert(8.0);
                                 ui.label("");
                                 ui.label(RichText::new("Wunschfrequenz").weak());
-                                freq_drag(ui, target, bpm);
+                                ui.horizontal(|ui| {
+                                    freq_drag(ui, target, bpm);
+                                    // Umrechnung in die jeweils andere Einheit
+                                    ui.label(RichText::new(format!("= {}", freq_text(*target, !bpm))).weak());
+                                });
                                 let hit = strobe_caps.iter().find_map(|k| k.value_for_hz(*target));
                                 match hit {
                                     Some(dmx) => {
@@ -1488,19 +1492,40 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
             });
             ui.end_row();
             ui.label("Port");
-            ui.add(egui::DragValue::new(&mut s.artnet_port).range(1..=65535));
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut s.artnet_port).range(1..=65535));
+                if ui.add_enabled(s.artnet_port != 6454, egui::Button::new("Standard (6454)")).clicked() {
+                    s.artnet_port = 6454;
+                }
+            });
             ui.end_row();
             ui.label("Wiederholrate");
-            ui.add(egui::DragValue::new(&mut s.refresh_hz).range(1.0..=44.0).speed(0.5).suffix(" Hz"));
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut s.refresh_hz).range(1.0..=44.0).speed(0.5).suffix(" Hz"));
+                if ui.add_enabled((s.refresh_hz - 40.0).abs() > 0.01, egui::Button::new("Standard (40 Hz)")).clicked() {
+                    s.refresh_hz = 40.0;
+                }
+            });
             ui.end_row();
             ui.label("MIDI-CCs als Werte");
             ui.checkbox(&mut s.cc_input, "annehmen (für Fades per CC-Lane)");
             ui.end_row();
         });
+        if ui.button("Alle Netzwerk-Einstellungen auf Standard").clicked() {
+            st.ip_text = "255.255.255.255".into();
+            s.artnet_port = 6454;
+            s.refresh_hz = 40.0;
+            s.cc_input = true;
+        }
         network_help(ui, shared, st_ip(&st.ip_text), &mut st.ip_text);
 
         ui.add_space(8.0);
-        ui.heading("MIDI-Kanal → Universum / Block");
+        ui.horizontal_wrapped(|ui| {
+            ui.heading("MIDI-Kanal → Universum / Block");
+            if ui.button("Standard-Zuordnung").clicked() {
+                s.midi = config::default_midi_map();
+            }
+        });
         egui::Grid::new("midimap").striped(true).num_columns(5).show(ui, |ui| {
             for h in ["MIDI", "aktiv", "Universum", "Block", "DMX"] {
                 ui.label(RichText::new(h).strong());

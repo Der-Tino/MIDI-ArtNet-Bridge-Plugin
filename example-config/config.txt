@@ -1,0 +1,37 @@
+# DMX Bridge – settings
+# Saved changes are picked up automatically (after ~1 s). Everything after # is a comment.
+format = 1
+
+# Art-Net target: IP of your node (unicast recommended, e.g. 192.168.0.50).
+# 255.255.255.255 = broadcast to everything in the network.
+artnet_ip = 255.255.255.255
+artnet_port = 6454
+
+# Refresh rate per universe in Hz (1–44). Changes are sent immediately as well.
+refresh_hz = 40
+
+# Accept MIDI CCs as values: CC number = slot (like the note), value 0–127 → 0–255.
+# Handy for fades drawn in CC lanes.
+cc_input = on
+
+# MIDI channel → universe + block (like the input blocks on an X32)
+#   block 1 = DMX   1–128   block 2 = DMX 129–256
+#   block 3 = DMX 257–384   block 4 = DMX 385–512
+#   note 0 = first channel of the block, note 127 = last.
+#   "off" = ignore this MIDI channel. Universe = Art-Net port address (0 = first).
+midi1  = 0 1
+midi2  = 0 2
+midi3  = 0 3
+midi4  = 0 4
+midi5  = 1 1
+midi6  = 1 2
+midi7  = 1 3
+midi8  = 1 4
+midi9  = off
+midi10 = off
+midi11 = off
+midi12 = off
+midi13 = off
+midi14 = off
+midi15 = off
+midi16 = off

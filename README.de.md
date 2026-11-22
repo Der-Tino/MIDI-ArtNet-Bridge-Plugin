@@ -156,7 +156,7 @@ gelb/rot an. Es stürzt deswegen nicht ab, und die restliche Konfiguration läuf
 
 Die Größe wählst du oben rechts (50, 75, 100, 125, 150, 200 %). Die komplette Oberfläche
 wird gezoomt – Schrift, Fader und Abstände bleiben im gleichen Verhältnis. Größe und Hz/BPM gelten für alle Projekte
-(`oberflaeche.txt` im Konfig-Ordner).
+(`ui.txt` im Konfig-Ordner). Sprache Deutsch/Englisch oben rechts umschaltbar.
 
 > **Tippen in Eingabefelder geht nicht?** Reaper gibt die Tastatur sonst nicht an das
 > Plugin weiter: im FX-Fenster die Option **„Send all keyboard input to plugin“** einschalten.

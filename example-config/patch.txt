@@ -1,0 +1,11 @@
+# Patch list: which device sits where?
+# Easiest to edit in the plugin (tab "Patch") – editing by hand works too.
+#
+# name | fixture (file in fixtures/, without .txt/.qxf) | universe | start address
+#
+# Optional extra columns:
+#   | mode=8 Channel     mode of a QLC+ fixture (.qxf)
+#   | count=8            8 identical devices in a row → "PAR 1" … "PAR 8"
+#   | spacing=10         address step between them (default: channel count)
+
+Washer | uking_wash_8ch | 0 | 1

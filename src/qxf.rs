@@ -181,10 +181,13 @@ fn decode(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn parse_qxf(id: &str, text: &str) -> Result<(FixtureType, Vec<String>), String> {
-    let doc = parse_xml(text).map_err(|e| format!("XML-Fehler: {e}"))?;
+    let doc = parse_xml(text).map_err(|e| crate::tf!("XML-Fehler: {e}", "XML error: {e}"))?;
     let root = doc
         .child("FixtureDefinition")
-        .ok_or("kein <FixtureDefinition> – ist das eine QLC+-Fixture?")?;
+        .ok_or(crate::i18n::t(
+            "kein <FixtureDefinition> – ist das eine QLC+-Fixture?",
+            "no <FixtureDefinition> – is this a QLC+ fixture?",
+        ))?;
     let manu = root.child("Manufacturer").map(Elem::text).unwrap_or("");
     let model = root.child("Model").map(Elem::text).unwrap_or(id);
     let name = format!("{manu} {model}").trim().to_string();
@@ -222,7 +225,10 @@ pub fn parse_qxf(id: &str, text: &str) -> Result<(FixtureType, Vec<String>), Str
             let fc = match chans.iter().find(|(n, _)| n == cn) {
                 Some((_, c)) => c.clone(),
                 None => {
-                    warnings.push(format!("Modus '{mname}': Kanal '{cn}' nicht definiert"));
+                    warnings.push(crate::tf!(
+                        "Modus '{mname}': Kanal '{cn}' nicht definiert",
+                        "mode '{mname}': channel '{cn}' not defined"
+                    ));
                     FixtureChannel {
                         kind: ChanKind::Other,
                         label: cn.to_string(),
@@ -240,7 +246,7 @@ pub fn parse_qxf(id: &str, text: &str) -> Result<(FixtureType, Vec<String>), Str
         });
     }
     if modes.is_empty() {
-        return Err("keine Modi (<Mode>) definiert".into());
+        return Err(crate::i18n::t("keine Modi (<Mode>) definiert", "no modes (<Mode>) defined").into());
     }
 
     Ok((

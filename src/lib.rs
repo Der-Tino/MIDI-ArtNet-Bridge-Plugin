@@ -14,6 +14,7 @@ use std::sync::{Arc, RwLock};
 mod artnet;
 mod config;
 mod editor;
+pub mod i18n;
 mod inflate;
 mod library;
 mod preview;
@@ -106,6 +107,7 @@ impl Plugin for DmxBridge {
         // Größe (Zoom) aus oberflaeche.txt schon vor dem ersten Öffnen setzen,
         // damit das Fenster direkt in der richtigen Größe aufgeht.
         let prefs = config::read_ui_prefs(&artnet::effective_dir(&self.params));
+        i18n::set_english(prefs.english);
         nih_plug_egui::set_ui_zoom(editor::zoom_for(prefs.scale));
         self.params
             .editor_state

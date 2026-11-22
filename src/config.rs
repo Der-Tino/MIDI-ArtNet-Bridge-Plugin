@@ -17,7 +17,9 @@ use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
+use crate::i18n::t;
 use crate::qxf;
+use crate::tf;
 
 pub const BLOCK_SIZE: usize = 128;
 pub const DMX_SIZE: usize = 512;
@@ -28,27 +30,27 @@ pub const DEFAULT_STROBE: (f32, f32) = (1.0, 25.0);
 pub type Rgb = [u8; 3];
 
 const EXAMPLES: &[(&str, &str)] = &[
-    ("config.txt", include_str!("../beispiel-config/config.txt")),
-    ("patch.txt", include_str!("../beispiel-config/patch.txt")),
+    ("config.txt", include_str!("../example-config/config.txt")),
+    ("patch.txt", include_str!("../example-config/patch.txt")),
     (
         "fixtures/uking_wash_8ch.txt",
-        include_str!("../beispiel-config/fixtures/uking_wash_8ch.txt"),
+        include_str!("../example-config/fixtures/uking_wash_8ch.txt"),
     ),
     (
         "fixtures/par_rgbwauv_8ch.txt",
-        include_str!("../beispiel-config/fixtures/par_rgbwauv_8ch.txt"),
+        include_str!("../example-config/fixtures/par_rgbwauv_8ch.txt"),
     ),
     (
         "fixtures/rgbw_4ch.txt",
-        include_str!("../beispiel-config/fixtures/rgbw_4ch.txt"),
+        include_str!("../example-config/fixtures/rgbw_4ch.txt"),
     ),
     (
         "fixtures/dimmer_1ch.txt",
-        include_str!("../beispiel-config/fixtures/dimmer_1ch.txt"),
+        include_str!("../example-config/fixtures/dimmer_1ch.txt"),
     ),
     (
-        "fixtures/beispiel_movinghead.txt",
-        include_str!("../beispiel-config/fixtures/beispiel_movinghead.txt"),
+        "fixtures/example_movinghead.txt",
+        include_str!("../example-config/fixtures/example_movinghead.txt"),
     ),
 ];
 
@@ -98,44 +100,45 @@ pub enum ChanKind {
 
 use ChanKind as K;
 
-/// (Typ, Anzeige, Schlüsselwörter in der Datei – das erste ist das "offizielle")
-const KIND_TABLE: &[(ChanKind, &str, &[&str])] = &[
-    (K::Dimmer, "Dimmer", &["dimmer", "master", "intensity", "intensität", "helligkeit"]),
-    (K::DimmerFine, "Dimmer fein", &["dimmer_fein", "dimmer_fine"]),
-    (K::Red, "Rot", &["rot", "red", "r"]),
-    (K::Green, "Grün", &["grün", "gruen", "green", "g"]),
-    (K::Blue, "Blau", &["blau", "blue", "b"]),
-    (K::White, "Weiß", &["weiß", "weiss", "white", "w"]),
-    (K::Amber, "Amber", &["amber", "a"]),
-    (K::Uv, "UV", &["uv", "u"]),
-    (K::Lime, "Lime", &["lime"]),
-    (K::Indigo, "Indigo", &["indigo"]),
-    (K::Cyan, "Cyan", &["cyan", "c"]),
-    (K::Magenta, "Magenta", &["magenta", "m"]),
-    (K::Yellow, "Gelb", &["gelb", "yellow", "y"]),
-    (K::ColorWheel, "Farbrad", &["farbrad", "colorwheel", "color_wheel"]),
-    (K::ColorMacro, "Farbmakro", &["farbmakro", "colormacro", "color_macro"]),
-    (K::Cto, "Farbtemperatur", &["cto", "farbtemperatur", "ctc", "ctb"]),
-    (K::Shutter, "Strobe/Shutter", &["strobe", "strobo", "shutter", "blitz"]),
-    (K::Pan, "Pan", &["pan"]),
-    (K::PanFine, "Pan fein", &["pan_fein", "pan_fine"]),
-    (K::Tilt, "Tilt", &["tilt"]),
-    (K::TiltFine, "Tilt fein", &["tilt_fein", "tilt_fine"]),
-    (K::PanTiltSpeed, "Pan/Tilt-Speed", &["pt_speed", "pan_tilt_speed", "bewegung_speed"]),
-    (K::Gobo, "Gobo", &["gobo"]),
-    (K::GoboRotation, "Gobo-Rotation", &["gobo_rotation", "goborotation"]),
-    (K::Prism, "Prisma", &["prisma", "prism"]),
-    (K::PrismRotation, "Prisma-Rotation", &["prisma_rotation", "prism_rotation"]),
-    (K::Focus, "Fokus", &["fokus", "focus"]),
-    (K::Zoom, "Zoom", &["zoom"]),
-    (K::Iris, "Iris", &["iris"]),
-    (K::Frost, "Frost", &["frost"]),
-    (K::Rotation, "Rotation", &["rotation", "drehung"]),
-    (K::Effect, "Effekt/Programm", &["effekt", "effect", "programm", "program", "makro", "macro", "modus"]),
-    (K::EffectSpeed, "Speed", &["speed", "geschwindigkeit", "effekt_speed"]),
-    (K::Fog, "Nebel", &["nebel", "fog", "haze", "hazer"]),
-    (K::Maintenance, "Wartung", &["wartung", "maintenance", "reset"]),
-    (K::Other, "Sonst", &["sonst", "other", "sonstiges", "nichts", "-"]),
+/// (type, German label, English label, keywords – first = German file keyword,
+/// the English file keyword is listed separately)
+const KIND_TABLE: &[(ChanKind, &str, &str, &str, &[&str])] = &[
+    (K::Dimmer, "Dimmer", "Dimmer", "dimmer", &["dimmer", "master", "intensity", "intensität", "helligkeit"]),
+    (K::DimmerFine, "Dimmer fein", "Dimmer fine", "dimmer_fine", &["dimmer_fein", "dimmer_fine"]),
+    (K::Red, "Rot", "Red", "red", &["rot", "red", "r"]),
+    (K::Green, "Grün", "Green", "green", &["grün", "gruen", "green", "g"]),
+    (K::Blue, "Blau", "Blue", "blue", &["blau", "blue", "b"]),
+    (K::White, "Weiß", "White", "white", &["weiß", "weiss", "white", "w"]),
+    (K::Amber, "Amber", "Amber", "amber", &["amber", "a"]),
+    (K::Uv, "UV", "UV", "uv", &["uv", "u"]),
+    (K::Lime, "Lime", "Lime", "lime", &["lime"]),
+    (K::Indigo, "Indigo", "Indigo", "indigo", &["indigo"]),
+    (K::Cyan, "Cyan", "Cyan", "cyan", &["cyan", "c"]),
+    (K::Magenta, "Magenta", "Magenta", "magenta", &["magenta", "m"]),
+    (K::Yellow, "Gelb", "Yellow", "yellow", &["gelb", "yellow", "y"]),
+    (K::ColorWheel, "Farbrad", "Color wheel", "colorwheel", &["farbrad", "colorwheel", "color_wheel"]),
+    (K::ColorMacro, "Farbmakro", "Color macro", "colormacro", &["farbmakro", "colormacro", "color_macro"]),
+    (K::Cto, "Farbtemperatur", "Color temp.", "cto", &["cto", "farbtemperatur", "ctc", "ctb"]),
+    (K::Shutter, "Strobe/Shutter", "Strobe/Shutter", "strobe", &["strobe", "strobo", "shutter", "blitz"]),
+    (K::Pan, "Pan", "Pan", "pan", &["pan"]),
+    (K::PanFine, "Pan fein", "Pan fine", "pan_fine", &["pan_fein", "pan_fine"]),
+    (K::Tilt, "Tilt", "Tilt", "tilt", &["tilt"]),
+    (K::TiltFine, "Tilt fein", "Tilt fine", "tilt_fine", &["tilt_fein", "tilt_fine"]),
+    (K::PanTiltSpeed, "Pan/Tilt-Speed", "Pan/tilt speed", "pt_speed", &["pt_speed", "pan_tilt_speed", "bewegung_speed"]),
+    (K::Gobo, "Gobo", "Gobo", "gobo", &["gobo"]),
+    (K::GoboRotation, "Gobo-Rotation", "Gobo rotation", "gobo_rotation", &["gobo_rotation", "goborotation"]),
+    (K::Prism, "Prisma", "Prism", "prism", &["prisma", "prism"]),
+    (K::PrismRotation, "Prisma-Rotation", "Prism rotation", "prism_rotation", &["prisma_rotation", "prism_rotation"]),
+    (K::Focus, "Fokus", "Focus", "focus", &["fokus", "focus"]),
+    (K::Zoom, "Zoom", "Zoom", "zoom", &["zoom"]),
+    (K::Iris, "Iris", "Iris", "iris", &["iris"]),
+    (K::Frost, "Frost", "Frost", "frost", &["frost"]),
+    (K::Rotation, "Rotation", "Rotation", "rotation", &["rotation", "drehung"]),
+    (K::Effect, "Effekt/Programm", "Effect/program", "effect", &["effekt", "effect", "programm", "program", "makro", "macro", "modus"]),
+    (K::EffectSpeed, "Speed", "Speed", "speed", &["speed", "geschwindigkeit", "effekt_speed"]),
+    (K::Fog, "Nebel", "Fog", "fog", &["nebel", "fog", "haze", "hazer"]),
+    (K::Maintenance, "Wartung", "Maintenance", "maintenance", &["wartung", "maintenance", "reset"]),
+    (K::Other, "Sonst", "Other", "other", &["sonst", "other", "sonstiges", "nichts", "-"]),
 ];
 
 impl ChanKind {
@@ -143,35 +146,36 @@ impl ChanKind {
         let l = s.trim().to_lowercase();
         KIND_TABLE
             .iter()
-            .find(|(_, _, keys)| keys.contains(&l.as_str()))
-            .map(|(k, _, _)| *k)
+            .find(|(_, _, _, _, keys)| keys.contains(&l.as_str()))
+            .map(|(k, ..)| *k)
     }
 
     pub fn label(self) -> &'static str {
         KIND_TABLE
             .iter()
-            .find(|(k, _, _)| *k == self)
-            .map(|(_, l, _)| *l)
+            .find(|(k, ..)| *k == self)
+            .map(|(_, de, en, _, _)| t(de, en))
             .unwrap_or("?")
     }
 
-    /// Schlüsselwort, das der Editor in Dateien schreibt
+    /// Keyword the editor writes into files (in the current UI language;
+    /// both languages are always accepted when reading)
     pub fn keyword(self) -> &'static str {
         KIND_TABLE
             .iter()
-            .find(|(k, _, _)| *k == self)
-            .map(|(_, _, keys)| keys[0])
-            .unwrap_or("sonst")
+            .find(|(k, ..)| *k == self)
+            .map(|(_, _, _, en_key, keys)| t(keys[0], en_key))
+            .unwrap_or("other")
     }
 
     pub fn all() -> impl Iterator<Item = ChanKind> {
-        KIND_TABLE.iter().map(|(k, _, _)| *k)
+        KIND_TABLE.iter().map(|(k, ..)| *k)
     }
 
     pub fn keyword_list() -> String {
         KIND_TABLE
             .iter()
-            .map(|(_, _, keys)| keys[0])
+            .map(|(_, _, _, en_key, keys)| t(keys[0], en_key))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -274,7 +278,7 @@ pub fn default_shutter_caps() -> Vec<Capability> {
             min: 0,
             max: 9,
             effect: Effect::Open,
-            label: "offen".into(),
+            label: t("offen", "open").into(),
         },
         Capability {
             min: 10,
@@ -356,7 +360,7 @@ fn parse_effect(s: &str) -> Result<Effect, String> {
                 .filter(|s| !s.is_empty())
                 .map(str::parse::<f32>)
                 .collect();
-            let nums = nums.map_err(|_| format!("'{s}': Hz-Angabe unverständlich"))?;
+            let nums = nums.map_err(|_| tf!("'{s}': Hz-Angabe unverständlich", "'{s}': frequency not understood"))?;
             let k = if per_minute { 1.0 / 60.0 } else { 1.0 };
             let (from, to) = match nums.as_slice() {
                 [] => DEFAULT_STROBE,
@@ -368,7 +372,9 @@ fn parse_effect(s: &str) -> Result<Effect, String> {
         "farbe" | "color" | "colour" => {
             let cols: Vec<Rgb> = rest.iter().filter_map(|c| parse_color(c)).collect();
             match cols.as_slice() {
-                [] => return Err(format!("'{s}': Farbe als #rrggbb oder Name angeben")),
+                // "Colour wheel rotation" o. Ä. ist freier Text, kein Farbfehler
+                [] if !rest.iter().any(|r| r.starts_with('#')) => Effect::Text,
+                [] => return Err(tf!("'{s}': Farbe als #rrggbb oder Name angeben", "'{s}': give a colour as #rrggbb or a name")),
                 [a] => Effect::Color(*a, None),
                 [a, b, ..] => Effect::Color(*a, Some(*b)),
             }
@@ -646,15 +652,16 @@ pub fn default_config_dir() -> PathBuf {
 /// Lädt den kompletten Show-Ordner. Schlägt nie fehl – Probleme landen in
 /// `show.messages`, im Zweifel gelten Standardwerte.
 pub fn load_show(dir: &Path) -> Show {
+    crate::i18n::set_english(read_ui_prefs(dir).english);
     let mut show = Show::empty(dir.to_path_buf());
 
     if !dir.exists() {
         match write_examples(dir) {
-            Ok(()) => show.msg(Level::Info, "Konfig-Ordner war leer – Beispieldateien angelegt."),
+            Ok(()) => show.msg(Level::Info, t("Konfig-Ordner war leer – Beispieldateien angelegt.", "Config folder was empty – example files created.")),
             Err(e) => {
                 show.msg(
                     Level::Error,
-                    format!("Konnte Ordner {} nicht anlegen: {e}", dir.display()),
+                    tf!("Konnte Ordner {} nicht anlegen: {e}", "Could not create folder {}: {e}", dir.display()),
                 );
                 return show;
             }
@@ -663,14 +670,14 @@ pub fn load_show(dir: &Path) -> Show {
 
     match read_text(&dir.join("config.txt")) {
         Ok(t) => parse_config(&mut show, &t),
-        Err(e) => show.msg(Level::Warn, format!("config.txt: {e} – Standardwerte aktiv")),
+        Err(e) => show.msg(Level::Warn, tf!("config.txt: {e} – Standardwerte aktiv", "config.txt: {e} – using defaults")),
     }
 
     let types = load_fixture_types(&mut show, &dir.join("fixtures"));
 
     match read_text(&dir.join("patch.txt")) {
         Ok(t) => parse_patch(&mut show, &t, &types),
-        Err(e) => show.msg(Level::Warn, format!("patch.txt: {e} – nichts gepatcht")),
+        Err(e) => show.msg(Level::Warn, tf!("patch.txt: {e} – nichts gepatcht", "patch.txt: {e} – nothing patched")),
     }
     let mut infos: Vec<TypeInfo> = types.into_values().collect();
     infos.sort_by(|a, b| a.ft.name.to_lowercase().cmp(&b.ft.name.to_lowercase()));
@@ -678,8 +685,9 @@ pub fn load_show(dir: &Path) -> Show {
     show.types = infos;
 
     validate(&mut show);
-    let info = format!(
+    let info = tf!(
         "{n_types} Fixture-Typen, {} Geräte gepatcht",
+        "{n_types} fixture types, {} devices patched",
         show.fixtures.len()
     );
     show.msg(Level::Info, info);
@@ -779,20 +787,20 @@ fn parse_target(v: &str) -> Result<Option<MidiTarget>, String> {
         .filter(|s| !s.is_empty())
         .collect();
     if parts.len() != 2 {
-        return Err(format!("'{v}': erwartet '<universum> <block>' oder 'aus'"));
+        return Err(tf!("'{v}': erwartet '<universum> <block>' oder 'aus'", "'{v}': expected '<universe> <block>' or 'off'"));
     }
     let universe: u16 = parts[0]
         .trim_start_matches('u')
         .parse()
         .ok()
         .filter(|u| *u <= MAX_UNIVERSE)
-        .ok_or_else(|| format!("'{}': Universum muss 0–{MAX_UNIVERSE} sein", parts[0]))?;
+        .ok_or_else(|| tf!("'{}': Universum muss 0–{MAX_UNIVERSE} sein", "'{}': universe must be 0–{MAX_UNIVERSE}", parts[0]))?;
     let block: u8 = parts[1]
         .trim_start_matches('b')
         .parse()
         .ok()
         .filter(|b| (1..=4).contains(b))
-        .ok_or_else(|| format!("'{}': Block muss 1–4 sein", parts[1]))?;
+        .ok_or_else(|| tf!("'{}': Block muss 1–4 sein", "'{}': block must be 1–4", parts[1]))?;
     Ok(Some(MidiTarget {
         universe,
         block: block - 1,
@@ -805,7 +813,7 @@ fn parse_config(show: &mut Show, text: &str) {
 
     for (ln, line) in clean_lines(text) {
         let Some((k, v)) = line.split_once('=') else {
-            show.msg(Level::Warn, format!("config.txt Zeile {ln}: erwartet 'schlüssel = wert'"));
+            show.msg(Level::Warn, tf!("config.txt Zeile {ln}: erwartet 'schlüssel = wert'", "config.txt line {ln}: expected 'key = value'"));
             continue;
         };
         let key = k.trim().to_lowercase();
@@ -814,19 +822,19 @@ fn parse_config(show: &mut Show, text: &str) {
             "format" => {}
             "artnet_ip" | "ip" => match v.parse::<Ipv4Addr>() {
                 Ok(ip) => show.artnet_ip = ip,
-                Err(_) => show.msg(Level::Error, format!("config.txt Zeile {ln}: ungültige IP '{v}'")),
+                Err(_) => show.msg(Level::Error, tf!("config.txt Zeile {ln}: ungültige IP '{v}'", "config.txt line {ln}: invalid IP '{v}'")),
             },
             "artnet_port" | "port" => match v.parse::<u16>() {
                 Ok(p) if p > 0 => show.artnet_port = p,
-                _ => show.msg(Level::Error, format!("config.txt Zeile {ln}: ungültiger Port '{v}'")),
+                _ => show.msg(Level::Error, tf!("config.txt Zeile {ln}: ungültiger Port '{v}'", "config.txt line {ln}: invalid port '{v}'")),
             },
             "refresh_hz" => match v.replace(',', ".").parse::<f32>() {
                 Ok(hz) if hz.is_finite() => show.refresh_hz = hz.clamp(1.0, 44.0),
-                _ => show.msg(Level::Error, format!("config.txt Zeile {ln}: ungültige Rate '{v}'")),
+                _ => show.msg(Level::Error, tf!("config.txt Zeile {ln}: ungültige Rate '{v}'", "config.txt line {ln}: invalid rate '{v}'")),
             },
             "cc_eingang" | "cc_input" => match parse_bool(v) {
                 Some(b) => show.cc_input = b,
-                None => show.msg(Level::Error, format!("config.txt Zeile {ln}: 'an' oder 'aus' erwartet")),
+                None => show.msg(Level::Error, tf!("config.txt Zeile {ln}: 'an' oder 'aus' erwartet", "config.txt line {ln}: expected 'on' or 'off'")),
             },
             _ if key.starts_with("midi") => {
                 let num = key[4..].trim().trim_start_matches(['_', ' ']).parse::<usize>();
@@ -836,14 +844,14 @@ fn parse_config(show: &mut Show, text: &str) {
                             midi[n - 1] = t;
                             midi_seen = true;
                         }
-                        Err(e) => show.msg(Level::Error, format!("config.txt Zeile {ln}: {e}")),
+                        Err(e) => show.msg(Level::Error, tf!("config.txt Zeile {ln}: {e}", "config.txt line {ln}: {e}")),
                     },
-                    _ => show.msg(Level::Error, format!("config.txt Zeile {ln}: MIDI-Kanal muss 1–16 sein")),
+                    _ => show.msg(Level::Error, tf!("config.txt Zeile {ln}: MIDI-Kanal muss 1–16 sein", "config.txt line {ln}: MIDI channel must be 1–16")),
                 }
             }
             _ => show.msg(
                 Level::Warn,
-                format!("config.txt Zeile {ln}: unbekannter Schlüssel '{}' (ignoriert)", k.trim()),
+                tf!("config.txt Zeile {ln}: unbekannter Schlüssel '{}' (ignoriert)", "config.txt line {ln}: unknown key '{}' (ignored)", k.trim()),
             ),
         }
     }
@@ -859,7 +867,7 @@ fn load_fixture_types(show: &mut Show, dir: &Path) -> HashMap<String, TypeInfo> 
     let rd = match fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => {
-            show.msg(Level::Warn, format!("Ordner fixtures/ nicht lesbar: {e}"));
+            show.msg(Level::Warn, tf!("Ordner fixtures/ nicht lesbar: {e}", "Folder fixtures/ not readable: {e}"));
             return map;
         }
     };
@@ -883,7 +891,7 @@ fn load_fixture_types(show: &mut Show, dir: &Path) -> HashMap<String, TypeInfo> 
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         if map.contains_key(&id) {
-            show.msg(Level::Warn, format!("fixtures/{fname}: Name '{id}' doppelt, ignoriert"));
+            show.msg(Level::Warn, tf!("fixtures/{fname}: Name '{id}' doppelt, ignoriert", "fixtures/{fname}: name '{id}' used twice, ignored"));
             continue;
         }
         let text = match read_text(&p) {
@@ -916,7 +924,7 @@ fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<F
     let mut current: Option<usize> = None;
 
     for (ln, line) in clean_lines(text) {
-        let here = |m: &str| format!("fixtures/{fname} Zeile {ln}: {m}");
+        let here = |m: &str| tf!("fixtures/{fname} Zeile {ln}: {m}", "fixtures/{fname} line {ln}: {m}");
 
         if !line.contains('|') {
             if let Some((k, v)) = line.split_once('=') {
@@ -926,7 +934,7 @@ fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<F
                 // andere Schlüssel: für spätere Versionen reserviert
                 continue;
             }
-            show.msg(Level::Warn, here("unverständlich, ignoriert"));
+            show.msg(Level::Warn, here(t("unverständlich, ignoriert", "not understood, ignored")));
             continue;
         }
 
@@ -935,11 +943,11 @@ fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<F
         // --- Wertebereich für den vorigen Kanal: "10-255 | strobe 1-25 | Text"
         if parts[0].contains('-') {
             let Some((min, max)) = parse_range(parts[0]) else {
-                show.msg(Level::Error, here(&format!("Bereich '{}' ungültig (z. B. 10-255)", parts[0])));
+                show.msg(Level::Error, here(&tf!("Bereich '{}' ungültig (z. B. 10-255)", "range '{}' invalid (e.g. 10-255)", parts[0])));
                 continue;
             };
             let Some(ci) = current else {
-                show.msg(Level::Error, here("Bereich ohne vorherige Kanalzeile"));
+                show.msg(Level::Error, here(t("Bereich ohne vorherige Kanalzeile", "range without a channel line above")));
                 continue;
             };
             let eff_str = parts.get(1).copied().unwrap_or("");
@@ -965,7 +973,7 @@ fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<F
         let n = match parts[0].parse::<usize>() {
             Ok(n) if (1..=DMX_SIZE).contains(&n) => n,
             _ => {
-                show.msg(Level::Error, here(&format!("Kanalnummer '{}' ungültig", parts[0])));
+                show.msg(Level::Error, here(&tf!("Kanalnummer '{}' ungültig", "channel number '{}' invalid", parts[0])));
                 continue;
             }
         };
@@ -973,8 +981,9 @@ fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<F
         let Some(kind) = ChanKind::parse(kind_str) else {
             show.msg(
                 Level::Error,
-                here(&format!(
+                here(&tf!(
                     "unbekannter Typ '{kind_str}' (erlaubt: {})",
+                    "unknown type '{kind_str}' (allowed: {})",
                     ChanKind::keyword_list()
                 )),
             );
@@ -989,7 +998,7 @@ fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<F
         let rest = match parts.get(3).filter(|s| !s.is_empty()) {
             None => 0,
             Some(s) => s.parse::<u8>().unwrap_or_else(|_| {
-                show.msg(Level::Error, here(&format!("Ruhewert '{s}' muss 0–255 sein")));
+                show.msg(Level::Error, here(&tf!("Ruhewert '{s}' muss 0–255 sein", "rest value '{s}' must be 0–255")));
                 0
             }),
         };
@@ -998,7 +1007,7 @@ fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<F
             chans.resize(n, None);
         }
         if chans[n - 1].is_some() {
-            show.msg(Level::Warn, here(&format!("Kanal {n} doppelt, letzter gilt")));
+            show.msg(Level::Warn, here(&tf!("Kanal {n} doppelt, letzter gilt", "channel {n} defined twice, last one wins")));
         }
         chans[n - 1] = Some(FixtureChannel {
             kind,
@@ -1010,7 +1019,7 @@ fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<F
     }
 
     if chans.is_empty() {
-        show.msg(Level::Error, format!("fixtures/{fname}: keine Kanäle definiert"));
+        show.msg(Level::Error, tf!("fixtures/{fname}: keine Kanäle definiert", "fixtures/{fname}: no channels defined"));
         return None;
     }
 
@@ -1020,7 +1029,7 @@ fn parse_fixture(show: &mut Show, id: &str, fname: &str, text: &str) -> Option<F
         .map(|(i, c)| {
             let mut ch = c.unwrap_or_else(|| FixtureChannel {
                 kind: ChanKind::Other,
-                label: format!("Kanal {}", i + 1),
+                label: tf!("Kanal {}", "Channel {}", i + 1),
                 rest: 0,
                 caps: Vec::new(),
             });
@@ -1045,7 +1054,7 @@ fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, TypeInfo>) {
         if parts.len() < 4 {
             show.msg(
                 Level::Error,
-                format!("patch.txt Zeile {ln}: erwartet 'Name | Fixture | Universum | Adresse'"),
+                tf!("patch.txt Zeile {ln}: erwartet 'Name | Fixture | Universum | Adresse'", "patch.txt line {ln}: expected 'name | fixture | universe | address'"),
             );
             continue;
         }
@@ -1057,14 +1066,14 @@ fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, TypeInfo>) {
         let universe = match parts[2].parse::<u16>() {
             Ok(u) if u <= MAX_UNIVERSE => u,
             _ => {
-                show.msg(Level::Error, format!("patch.txt Zeile {ln}: Universum '{}' ungültig", parts[2]));
+                show.msg(Level::Error, tf!("patch.txt Zeile {ln}: Universum '{}' ungültig", "patch.txt line {ln}: universe '{}' invalid", parts[2]));
                 continue;
             }
         };
         let address = match parts[3].parse::<usize>() {
             Ok(a) if (1..=DMX_SIZE).contains(&a) => a,
             _ => {
-                show.msg(Level::Error, format!("patch.txt Zeile {ln}: Adresse '{}' muss 1–512 sein", parts[3]));
+                show.msg(Level::Error, tf!("patch.txt Zeile {ln}: Adresse '{}' muss 1–512 sein", "patch.txt line {ln}: address '{}' must be 1–512", parts[3]));
                 continue;
             }
         };
@@ -1080,13 +1089,13 @@ fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, TypeInfo>) {
                     "modus" | "mode" => mode_req = Some(v.to_string()),
                     "anzahl" | "count" => match v.parse::<usize>() {
                         Ok(n) if (1..=DMX_SIZE).contains(&n) => count = n,
-                        _ => show.msg(Level::Error, format!("patch.txt Zeile {ln}: anzahl '{v}' ungültig")),
+                        _ => show.msg(Level::Error, tf!("patch.txt Zeile {ln}: anzahl '{v}' ungültig", "patch.txt line {ln}: count '{v}' invalid")),
                     },
                     "abstand" | "spacing" => match v.parse::<usize>() {
                         Ok(n) if (1..=DMX_SIZE).contains(&n) => spacing = Some(n),
-                        _ => show.msg(Level::Error, format!("patch.txt Zeile {ln}: abstand '{v}' ungültig")),
+                        _ => show.msg(Level::Error, tf!("patch.txt Zeile {ln}: abstand '{v}' ungültig", "patch.txt line {ln}: spacing '{v}' invalid")),
                     },
-                    other => show.msg(Level::Warn, format!("patch.txt Zeile {ln}: '{other}' unbekannt (ignoriert)")),
+                    other => show.msg(Level::Warn, tf!("patch.txt Zeile {ln}: '{other}' unbekannt (ignoriert)", "patch.txt line {ln}: '{other}' unknown (ignored)")),
                 }
             } else if let Some(n) = extra
                 .strip_prefix(['x', 'X', '×'])
@@ -1111,7 +1120,7 @@ fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, TypeInfo>) {
         let Some(ft) = types.get(&tid).map(|t| &t.ft) else {
             show.msg(
                 Level::Error,
-                format!("patch.txt Zeile {ln}: Fixture '{tid}' nicht in fixtures/ gefunden"),
+                tf!("patch.txt Zeile {ln}: Fixture '{tid}' nicht in fixtures/ gefunden", "patch.txt line {ln}: fixture '{tid}' not found in fixtures/"),
             );
             continue;
         };
@@ -1127,8 +1136,9 @@ fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, TypeInfo>) {
         let Some(mode) = mode else {
             show.msg(
                 Level::Error,
-                format!(
+                tf!(
                     "patch.txt Zeile {ln}: Modus '{}' gibt es bei '{tid}' nicht (verfügbar: {})",
+                    "patch.txt line {ln}: '{tid}' has no mode '{}' (available: {})",
                     mode_req.unwrap_or_default(),
                     mode_list()
                 ),
@@ -1138,15 +1148,16 @@ fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, TypeInfo>) {
         if mode_req.is_none() && ft.modes.len() > 1 {
             show.msg(
                 Level::Info,
-                format!(
+                tf!(
                     "patch.txt Zeile {ln}: '{tid}' hat mehrere Modi, nehme '{}' (verfügbar: {})",
+                    "patch.txt line {ln}: '{tid}' has several modes, using '{}' (available: {})",
                     mode.name,
                     mode_list()
                 ),
             );
         }
         if mode.channels.is_empty() {
-            show.msg(Level::Error, format!("patch.txt Zeile {ln}: Modus '{}' hat keine Kanäle", mode.name));
+            show.msg(Level::Error, tf!("patch.txt Zeile {ln}: Modus '{}' hat keine Kanäle", "patch.txt line {ln}: mode '{}' has no channels", mode.name));
             continue;
         }
 
@@ -1164,7 +1175,7 @@ fn parse_patch(show: &mut Show, text: &str, types: &HashMap<String, TypeInfo>) {
             if last > DMX_SIZE {
                 show.msg(
                     Level::Error,
-                    format!("patch.txt Zeile {ln}: '{name}' ({len} Kanäle ab {addr}) endet bei {last} > 512"),
+                    tf!("patch.txt Zeile {ln}: '{name}' ({len} Kanäle ab {addr}) endet bei {last} > 512", "patch.txt line {ln}: '{name}' ({len} channels from {addr}) ends at {last} > 512"),
                 );
                 break;
             }
@@ -1196,8 +1207,9 @@ fn validate(show: &mut Show) {
                     if overlap_pairs.insert((other, fi)) {
                         msgs.push(Message {
                             level: Level::Warn,
-                            text: format!(
+                            text: tf!(
                                 "Überschneidung: '{}' und '{}' ab U{} DMX {} (erstes Gerät gewinnt)",
+                                "Overlap: '{}' and '{}' from U{} DMX {} (first device wins)",
                                 show.fixtures[other].name,
                                 f.name,
                                 f.universe,
@@ -1224,7 +1236,7 @@ fn validate(show: &mut Show) {
         } else if unreachable > 0 {
             msgs.push(Message {
                 level: Level::Warn,
-                text: format!("'{}': {unreachable} Kanäle liegen in einem Block ohne MIDI-Kanal", f.name),
+                text: tf!("'{}': {unreachable} Kanäle liegen in einem Block ohne MIDI-Kanal", "'{}': {unreachable} channels are in a block without a MIDI channel", f.name),
             });
         }
     }
@@ -1235,8 +1247,9 @@ fn validate(show: &mut Show) {
                 if a == b {
                     msgs.push(Message {
                         level: Level::Warn,
-                        text: format!(
+                        text: tf!(
                             "MIDI-Kanal {} und {} steuern denselben Block (U{} Block {})",
+                            "MIDI channels {} and {} control the same block (U{} block {})",
                             i + 1,
                             j + 1,
                             a.universe,
@@ -1289,7 +1302,7 @@ pub fn export_note_names(show: &Show) -> Result<PathBuf, String> {
     }
 
     if written == 0 {
-        return Err("kein MIDI-Kanal mit gepatchten Geräten".into());
+        return Err(t("kein MIDI-Kanal mit gepatchten Geräten", "no MIDI channel with patched devices").into());
     }
     Ok(out)
 }
@@ -1351,10 +1364,12 @@ pub fn file_slug(name: &str) -> String {
 }
 
 pub fn write_patch(dir: &Path, entries: &[PatchEntry]) -> Result<(), String> {
-    let mut out = String::from(
+    let mut out = String::from(t(
         "# Patch-Liste – gespeichert vom DMX-Bridge-Editor (Handbearbeitung weiterhin möglich)\n\
          # Name | Fixture | Universum | Startadresse | [modus=…] [anzahl=n] [abstand=n]\n\n",
-    );
+        "# Patch list – saved by the DMX Bridge editor (editing by hand still works)\n\
+         # name | fixture | universe | start address | [mode=…] [count=n] [spacing=n]\n\n",
+    ));
     let w_name = entries.iter().map(|e| cell(&e.name).chars().count()).max().unwrap_or(4).max(4);
     let w_fix = entries.iter().map(|e| e.fixture.chars().count()).max().unwrap_or(7).max(7);
     for e in entries {
@@ -1364,13 +1379,13 @@ pub fn write_patch(dir: &Path, entries: &[PatchEntry]) -> Result<(), String> {
             e.fixture, e.universe, e.address
         );
         if let Some(m) = &e.mode {
-            line.push_str(&format!(" | modus={}", cell(m)));
+            line.push_str(&format!(" | {}={}", t("modus", "mode"), cell(m)));
         }
         if e.count > 1 {
-            line.push_str(&format!(" | anzahl={}", e.count));
+            line.push_str(&format!(" | {}={}", t("anzahl", "count"), e.count));
         }
         if let Some(sp) = e.spacing {
-            line.push_str(&format!(" | abstand={sp}"));
+            line.push_str(&format!(" | {}={sp}", t("abstand", "spacing")));
         }
         out.push_str(line.trim_end());
         out.push('\n');
@@ -1380,19 +1395,35 @@ pub fn write_patch(dir: &Path, entries: &[PatchEntry]) -> Result<(), String> {
 
 pub fn write_config(dir: &Path, s: &Settings) -> Result<(), String> {
     let mut out = String::new();
-    out.push_str("# DMX Bridge – Grundeinstellungen (gespeichert vom Editor)\nformat = 1\n\n");
-    out.push_str("# Art-Net-Ziel: IP des Nodes (Unicast empfohlen). 255.255.255.255 = Broadcast\n");
+    out.push_str(t(
+        "# DMX Bridge – Grundeinstellungen (gespeichert vom Editor)\nformat = 1\n\n",
+        "# DMX Bridge – settings (saved by the editor)\nformat = 1\n\n",
+    ));
+    out.push_str(t(
+        "# Art-Net-Ziel: IP des Nodes (Unicast empfohlen). 255.255.255.255 = Broadcast\n",
+        "# Art-Net target: IP of the node (unicast recommended). 255.255.255.255 = broadcast\n",
+    ));
     out.push_str(&format!("artnet_ip = {}\nartnet_port = {}\n\n", s.artnet_ip, s.artnet_port));
-    out.push_str("# Wiederholrate pro Universum in Hz (1–44)\n");
+    out.push_str(t("# Wiederholrate pro Universum in Hz (1–44)\n", "# Refresh rate per universe in Hz (1–44)\n"));
     out.push_str(&format!("refresh_hz = {}\n\n", fmt_num(s.refresh_hz)));
-    out.push_str("# MIDI-CCs als Werte annehmen (CC-Nummer = Slot wie die Note)\n");
-    out.push_str(&format!("cc_eingang = {}\n\n", if s.cc_input { "an" } else { "aus" }));
-    out.push_str("# MIDI-Kanal → Universum + Block (1 = DMX 1–128, 2 = 129–256, 3 = 257–384, 4 = 385–512)\n");
-    for (i, t) in s.midi.iter().enumerate() {
+    out.push_str(t(
+        "# MIDI-CCs als Werte annehmen (CC-Nummer = Slot wie die Note)\n",
+        "# Accept MIDI CCs as values (CC number = slot, like the note)\n",
+    ));
+    out.push_str(&format!(
+        "{} = {}\n\n",
+        t("cc_eingang", "cc_input"),
+        if s.cc_input { t("an", "on") } else { t("aus", "off") }
+    ));
+    out.push_str(t(
+        "# MIDI-Kanal → Universum + Block (1 = DMX 1–128, 2 = 129–256, 3 = 257–384, 4 = 385–512)\n",
+        "# MIDI channel → universe + block (1 = DMX 1–128, 2 = 129–256, 3 = 257–384, 4 = 385–512)\n",
+    ));
+    for (i, target) in s.midi.iter().enumerate() {
         let key = format!("midi{}", i + 1);
-        match t {
-            Some(t) => out.push_str(&format!("{key:<6} = {} {}\n", t.universe, t.block + 1)),
-            None => out.push_str(&format!("{key:<6} = aus\n")),
+        match target {
+            Some(m) => out.push_str(&format!("{key:<6} = {} {}\n", m.universe, m.block + 1)),
+            None => out.push_str(&format!("{key:<6} = {}\n", t("aus", "off"))),
         }
     }
     write_atomic(&dir.join("config.txt"), &out)
@@ -1412,28 +1443,31 @@ fn hex(c: Rgb) -> String {
 
 pub fn effect_to_text(e: &Effect) -> String {
     match e {
-        Effect::Nothing => "aus".into(),
-        Effect::Open => "offen".into(),
-        Effect::Closed => "zu".into(),
+        Effect::Nothing => t("aus", "off").into(),
+        Effect::Open => t("offen", "open").into(),
+        Effect::Closed => t("zu", "closed").into(),
         Effect::Strobe { from, to, random } => format!(
             "{} {}-{}",
-            if *random { "zufall" } else { "strobe" },
+            if *random { t("zufall", "random") } else { "strobe" },
             fmt_num(*from),
             fmt_num(*to)
         ),
-        Effect::Color(a, None) => format!("farbe {}", hex(*a)),
-        Effect::Color(a, Some(b)) => format!("farbe {} {}", hex(*a), hex(*b)),
+        Effect::Color(a, None) => format!("{} {}", t("farbe", "color"), hex(*a)),
+        Effect::Color(a, Some(b)) => format!("{} {} {}", t("farbe", "color"), hex(*a), hex(*b)),
         Effect::Text => "info".into(),
     }
 }
 
 pub fn fixture_to_text(name: &str, channels: &[FixtureChannel], source_note: Option<&str>) -> String {
     let mut out = String::new();
-    out.push_str("# Fixture – gespeichert vom DMX-Bridge-Editor\n");
+    out.push_str(t("# Fixture – gespeichert vom DMX-Bridge-Editor\n", "# Fixture – saved by the DMX Bridge editor\n"));
     if let Some(n) = source_note {
         out.push_str(&format!("# {}\n", cell(n)));
     }
-    out.push_str("# Kanal | Typ | Bezeichnung | Ruhewert\n#   von-bis | Funktion | Bezeichnung\n\n");
+    out.push_str(t(
+        "# Kanal | Typ | Bezeichnung | Ruhewert\n#   von-bis | Funktion | Bezeichnung\n\n",
+        "# channel | type | label | rest value\n#   from-to | function | label\n\n",
+    ));
     out.push_str(&format!("name = {}\n\n", cell(name)));
     for (i, ch) in channels.iter().enumerate() {
         out.push_str(&format!(
@@ -1468,7 +1502,7 @@ pub fn write_fixture_txt(
     source_note: Option<&str>,
 ) -> Result<String, String> {
     if channels.is_empty() {
-        return Err("ein Fixture braucht mindestens einen Kanal".into());
+        return Err(t("ein Fixture braucht mindestens einen Kanal", "a fixture needs at least one channel").into());
     }
     let id = file_slug(id);
     write_atomic(
@@ -1511,36 +1545,78 @@ pub fn install_qxf(dir: &Path, base_id: &str, text: &str) -> Result<String, Stri
 }
 
 // ---------------------------------------------------------------------------
-// Oberfläche (global, nicht pro Projekt): oberflaeche.txt
+// UI preferences (global, all projects): ui.txt (older versions: oberflaeche.txt)
 // ---------------------------------------------------------------------------
 
 pub const UI_SCALES: [f32; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+
+/// How MIDI notes are shown
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NoteFmt {
+    #[default]
+    Both,
+    Number,
+    Name,
+}
+
+/// Extra info line under each stage tile
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TileInfo {
+    #[default]
+    Nothing,
+    Address,
+    Dimmer,
+    Midi,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UiPrefs {
     pub scale: f32,
     pub bpm: bool,
+    pub english: bool,
+    pub notes: NoteFmt,
+    pub tile: TileInfo,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { scale: 1.0, bpm: false }
+        Self {
+            scale: 1.0,
+            bpm: false,
+            english: true,
+            notes: NoteFmt::Both,
+            tile: TileInfo::Nothing,
+        }
+    }
+}
+
+/// MIDI note as number, name (C4 = 60, like Reaper) or both
+pub fn note_text(n: u8, fmt: NoteFmt) -> String {
+    match fmt {
+        NoteFmt::Number => n.to_string(),
+        NoteFmt::Name => note_name(n),
+        NoteFmt::Both => format!("{n} ({})", note_name(n)),
     }
 }
 
 pub fn read_ui_prefs(dir: &Path) -> UiPrefs {
     let mut p = UiPrefs::default();
-    let Ok(text) = read_text(&dir.join("oberflaeche.txt")) else {
+    let text = read_text(&dir.join("ui.txt")).or_else(|_| {
+        // ältere Versionen: deutsch, Standardsprache war Deutsch
+        p.english = false;
+        read_text(&dir.join("oberflaeche.txt"))
+    });
+    let Ok(text) = text else {
+        p.english = true;
         return p;
     };
     for (_, line) in clean_lines(&text) {
         let Some((k, v)) = line.split_once('=') else { continue };
-        let v = v.trim().trim_end_matches('%').trim();
+        let v = v.trim().trim_end_matches('%').trim().to_lowercase();
         match k.trim().to_lowercase().as_str() {
             "skalierung" | "scale" => {
                 if let Ok(x) = v.replace(',', ".").parse::<f32>() {
                     let x = if x > 5.0 { x / 100.0 } else { x };
-                    // auf die nächste angebotene Stufe runden
                     p.scale = UI_SCALES
                         .iter()
                         .copied()
@@ -1548,7 +1624,23 @@ pub fn read_ui_prefs(dir: &Path) -> UiPrefs {
                         .unwrap_or(1.0);
                 }
             }
-            "frequenz" | "frequency" => p.bpm = v.eq_ignore_ascii_case("bpm"),
+            "frequenz" | "frequency" => p.bpm = v == "bpm",
+            "sprache" | "language" => p.english = !matches!(v.as_str(), "de" | "deutsch" | "german"),
+            "noten" | "notes" => {
+                p.notes = match v.as_str() {
+                    "zahl" | "number" => NoteFmt::Number,
+                    "name" => NoteFmt::Name,
+                    _ => NoteFmt::Both,
+                }
+            }
+            "kachel" | "tile" => {
+                p.tile = match v.as_str() {
+                    "adresse" | "address" => TileInfo::Address,
+                    "dimmer" => TileInfo::Dimmer,
+                    "midi" => TileInfo::Midi,
+                    _ => TileInfo::Nothing,
+                }
+            }
             _ => {}
         }
     }
@@ -1557,12 +1649,27 @@ pub fn read_ui_prefs(dir: &Path) -> UiPrefs {
 
 pub fn write_ui_prefs(dir: &Path, p: &UiPrefs) -> Result<(), String> {
     let text = format!(
-        "# DMX Bridge – Oberfläche (gilt für alle Projekte)\n\
-         skalierung = {:.0} %\n\
-         frequenz = {}\n",
+        "# DMX Bridge – user interface (applies to all projects)\n\
+         scale = {:.0} %\n\
+         frequency = {}\n\
+         language = {}\n\
+         notes = {}\n\
+         tile = {}\n",
         p.scale * 100.0,
-        if p.bpm { "bpm" } else { "hz" }
+        if p.bpm { "bpm" } else { "hz" },
+        if p.english { "en" } else { "de" },
+        match p.notes {
+            NoteFmt::Both => "both",
+            NoteFmt::Number => "number",
+            NoteFmt::Name => "name",
+        },
+        match p.tile {
+            TileInfo::Nothing => "nothing",
+            TileInfo::Address => "address",
+            TileInfo::Dimmer => "dimmer",
+            TileInfo::Midi => "midi",
+        },
     );
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    fs::write(dir.join("oberflaeche.txt"), text).map_err(|e| e.to_string())
+    fs::write(dir.join("ui.txt"), text).map_err(|e| e.to_string())
 }

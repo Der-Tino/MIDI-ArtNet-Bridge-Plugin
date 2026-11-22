@@ -182,7 +182,7 @@ fn run(shared: Arc<Shared>, params: Arc<BridgeParams>, stop: Arc<AtomicBool>) {
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                         Err(e) => {
                             shared.send_errors.fetch_add(1, Relaxed);
-                            shared.set_net_error(Some(format!("Senden an {target}: {e}")));
+                            shared.set_net_error(Some(crate::tf!("Senden an {target}: {e}", "Sending to {target}: {e}")));
                             error_shown = true;
                             failed = true;
                             break;
@@ -264,9 +264,13 @@ pub fn start_discovery(shared: Arc<Shared>) {
         .name("dmx-bridge-artpoll".into())
         .spawn(move || {
             let status = match discover(&shared) {
-                Ok(0) => "Kein Node geantwortet. Ist der Node an und im selben Netz?".to_string(),
-                Ok(n) => format!("{n} Node(s) gefunden."),
-                Err(e) => format!("Suche fehlgeschlagen: {e}"),
+                Ok(0) => crate::i18n::t(
+                    "Kein Node geantwortet. Ist der Node an und im selben Netz?",
+                    "No node answered. Is the node switched on and in the same network?",
+                )
+                .to_string(),
+                Ok(n) => crate::tf!("{n} Node(s) gefunden.", "{n} node(s) found."),
+                Err(e) => crate::tf!("Suche fehlgeschlagen: {e}", "Search failed: {e}"),
             };
             if let Ok(mut s) = shared.discovery_status.lock() {
                 *s = status;

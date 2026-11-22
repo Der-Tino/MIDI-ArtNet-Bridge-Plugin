@@ -1,0 +1,24 @@
+# U`King RGBW wall washer, 8-channel mode
+# EXAMPLE – please check against the channel list in the manual!
+#
+# channel line:  channel | type | label | rest value (optional)
+# range line (applies to the channel above):
+#                from-to | function | label
+#
+# functions:     open · closed · strobe 1-25 (Hz) · random 1-25 · color #ff0000 · off
+#                anything else = free text (e.g. "auto program 1")
+
+name = UKing Wash 8ch
+
+1 | dimmer | Dimmer | 255
+2 | red    | Red
+3 | green  | Green
+4 | blue   | Blue
+5 | white  | White
+6 | strobe | Strobe
+  0-9    | open        | no strobe
+  10-255 | strobe 1-25 | strobe slow - fast
+7 | effect | Program
+  0-9    | off         | DMX control
+  10-255 | Auto programs
+8 | speed  | Speed

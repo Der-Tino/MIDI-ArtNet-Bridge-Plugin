@@ -1,4 +1,0 @@
-# Einfacher Dimmerkanal (Dimmerpack, Nebel, Blinder …)
-name = Dimmer 1ch
-
-1 | dimmer | Intensität

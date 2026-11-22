@@ -1,4 +1,5 @@
-//! GUI: Live-Vorschau, Patch-Editor, Fixture-Editor, QLC+ Bibliothek, Einstellungen.
+//! GUI: live preview, patch editor, fixture editor, QLC+ library, settings.
+//! All texts are bilingual (German/English) via `t()` / `tf!`.
 
 use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
@@ -10,27 +11,29 @@ use nih_plug_egui::{create_egui_editor, widgets::ParamSlider};
 
 use crate::artnet;
 use crate::config::{
-    self, Capability, ChanKind, Effect, FixtureChannel, FixtureType, Level, MidiTarget,
-    PatchEntry, PatchedFixture, Settings, Show, UiPrefs, BLOCK_SIZE, UI_SCALES,
+    self, Capability, ChanKind, Effect, FixtureChannel, FixtureType, Level, MidiTarget, NoteFmt,
+    PatchEntry, PatchedFixture, Settings, Show, TileInfo, UiPrefs, BLOCK_SIZE, UI_SCALES,
 };
+use crate::i18n::{self, t};
 use crate::library;
 use crate::preview;
 use crate::qxf;
 use crate::shared::{self, Shared, MAX_BUFS};
+use crate::tf;
 use crate::BridgeParams;
 
-/// Layout-Fläche in Punkten – bleibt bei jeder Größe gleich, nur der Zoom ändert sich
+/// Layout area in points – identical at every size, only the zoom changes
 pub const BASE_W: f32 = 880.0;
 pub const BASE_H: f32 = 600.0;
-/// egui ist von Haus aus klein – „100 %“ entspricht Zoom 1,25
+/// egui is small by default – "100 %" corresponds to zoom 1.25
 pub const ZOOM_BASE: f32 = 1.25;
 
-/// Zoom für eine Größenstufe (0.5 … 2.0)
+/// Zoom for a size preset (0.5 … 2.0)
 pub fn zoom_for(scale: f32) -> f32 {
     scale * ZOOM_BASE
 }
 
-/// Fenstergröße (logische Pixel) für eine Größenstufe
+/// Window size (logical pixels) for a size preset
 pub fn window_size_for(scale: f32) -> (u32, u32) {
     let z = zoom_for(scale);
     ((BASE_W * z).round() as u32, (BASE_H * z).round() as u32)
@@ -39,6 +42,8 @@ pub fn window_size_for(scale: f32) -> (u32, u32) {
 const RED: Color32 = Color32::from_rgb(235, 90, 80);
 const YELLOW: Color32 = Color32::from_rgb(235, 195, 70);
 const GREEN: Color32 = Color32::from_rgb(100, 205, 120);
+/// slightly lighter background for the stage
+const STAGE_BG: Color32 = Color32::from_rgb(44, 44, 48);
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
@@ -50,14 +55,14 @@ enum Tab {
     Settings,
 }
 
-/// Arbeitskopie eines Text-Fixtures im Editor
+/// Working copy of a text fixture in the editor
 #[derive(Clone)]
 struct FxEdit {
     id: String,
     name: String,
     channels: Vec<FixtureChannel>,
     open_caps: Vec<bool>,
-    /// Stand beim Laden/Speichern – zum Erkennen ungespeicherter Änderungen
+    /// state when loaded/saved – to detect unsaved changes
     base: Option<(String, Vec<FixtureChannel>)>,
 }
 
@@ -83,8 +88,9 @@ struct UiState {
 
     show_ptr: usize,
     prefs: UiPrefs,
-    bpm: bool,
-    /// Strobe-Rechner: (Gerät, Kanal) → Wunschfrequenz in Hz
+    /// prefs changed somewhere without access to params → save after the frame
+    prefs_dirty: bool,
+    /// strobe calculator: (device, channel) → wanted frequency in Hz
     strobe_target: std::collections::HashMap<(usize, usize), f32>,
 
     patch: Vec<PatchEntry>,
@@ -117,7 +123,7 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         egui_state,
         UiState::default(),
         |ctx: &egui::Context, _st: &mut UiState| {
-            // Ubuntu-Light (Standard) hat z. B. keine Pfeile → Hack als Ersatzschrift
+            // Ubuntu-Light (default) lacks e.g. arrows → Hack as fallback font
             let mut fonts = egui::FontDefinitions::default();
             if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
                 list.push("Hack".to_owned());
@@ -130,6 +136,7 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
 
             if !st.initialized {
                 st.prefs = config::read_ui_prefs(&artnet::effective_dir(&params));
+                i18n::set_english(st.prefs.english);
                 request_window(&params, st.prefs.scale);
                 st.dir_edit = artnet::effective_dir(&params).display().to_string();
                 st.rate_t = now;
@@ -138,7 +145,7 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
                 st.initialized = true;
             }
 
-            // Paketrate statt Zähler
+            // packet rate instead of a counter
             if now - st.rate_t >= 1.0 {
                 let p = shared.packets_sent.load(Relaxed);
                 st.rate = (p.saturating_sub(st.rate_pkts)) as f32 / (now - st.rate_t) as f32;
@@ -146,7 +153,6 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
                 st.rate_t = now;
             }
 
-            st.bpm = st.prefs.bpm;
             let show: Option<Arc<Show>> = shared.show.lock().ok().and_then(|g| g.clone());
             if let Some(s) = &show {
                 sync_with_show(st, s);
@@ -154,41 +160,58 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
             let master = master_value(&params);
 
             egui::CentralPanel::default().show(ctx, |ui| {
-                    header(ui, &params, &shared, setter, show.as_deref(), st);
-                    ui.add_space(4.0);
-                    tab_bar(ui, st);
-                    ui.separator();
+                header(ui, &params, &shared, setter, show.as_deref(), st);
+                ui.add_space(4.0);
+                tab_bar(ui, st);
+                ui.separator();
 
-                    let Some(show) = show.as_deref() else {
-                        ui.label("Lade Konfiguration …");
-                        return;
-                    };
-                    if st.tab == Tab::Library {
-                        // eigene Scrollbereiche (Hersteller-Liste und Details)
-                        library_tab(ui, show, &shared, st);
-                        return;
-                    }
-                    egui::ScrollArea::vertical()
-                        .id_salt("main-scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| match st.tab {
-                            Tab::Live => live_tab(ui, show, &shared, master, st),
-                            Tab::Patch => patch_tab(ui, show, &shared, st),
-                            Tab::Fixtures => fixtures_tab(ui, show, &shared, st),
-                            Tab::Library => {}
-                            Tab::Settings => settings_tab(ui, show, &params, &shared, st),
-                        });
+                let Some(show) = show.as_deref() else {
+                    ui.label(t("Lade Konfiguration …", "Loading configuration …"));
+                    return;
+                };
+                if st.tab == Tab::Library {
+                    // own scroll areas (manufacturer list and details)
+                    library_tab(ui, show, &shared, st);
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("main-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match st.tab {
+                        Tab::Live => live_tab(ui, show, &shared, master, st),
+                        Tab::Patch => patch_tab(ui, show, &shared, st),
+                        Tab::Fixtures => fixtures_tab(ui, show, &shared, st),
+                        Tab::Library => {}
+                        Tab::Settings => settings_tab(ui, show, &params, &shared, st),
+                    });
             });
+
+            if st.prefs_dirty {
+                st.prefs_dirty = false;
+                save_prefs(&params, st);
+            }
         },
     )
 }
 
 // ---------------------------------------------------------------------------
-// Allgemein
+// General helpers
 // ---------------------------------------------------------------------------
 
-/// Neue Konfiguration geladen → Arbeitskopien ohne ungespeicherte
-/// Änderungen aktualisieren.
+/// Framed block with a title – visually separates logical groups
+fn section<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().faint_bg_color)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(title).strong());
+            ui.separator();
+            add(ui)
+        })
+        .inner
+}
+
+/// New configuration loaded → refresh working copies without unsaved changes.
 fn sync_with_show(st: &mut UiState, show: &Arc<Show>) {
     let ptr = Arc::as_ptr(show) as usize;
     if ptr == st.show_ptr {
@@ -209,8 +232,8 @@ fn sync_with_show(st: &mut UiState, show: &Arc<Show>) {
     st.settings_base = Some(new_settings);
 
     if let Some(fx) = &mut st.fx_edit {
-        if let Some(t) = show.type_info(&fx.id).filter(|t| !t.is_qxf) {
-            let loaded = (t.ft.name.clone(), t.ft.modes[0].channels.clone());
+        if let Some(ti) = show.type_info(&fx.id).filter(|ti| !ti.is_qxf) {
+            let loaded = (ti.ft.name.clone(), ti.ft.modes[0].channels.clone());
             if !fx.dirty() {
                 fx.name = loaded.0.clone();
                 fx.channels = loaded.1.clone();
@@ -219,6 +242,10 @@ fn sync_with_show(st: &mut UiState, show: &Arc<Show>) {
             fx.base = Some(loaded);
         }
     }
+}
+
+fn save_prefs(params: &BridgeParams, st: &UiState) {
+    let _ = config::write_ui_prefs(&artnet::effective_dir(params), &st.prefs);
 }
 
 fn freq_text(hz: f32, bpm: bool) -> String {
@@ -238,12 +265,12 @@ fn describe_cap(cap: &Capability, v: u8, bpm: bool) -> String {
     }
 }
 
-/// Velocity, die beim Note-On genau diesen DMX-Wert ergibt
+/// Velocity that gives exactly this DMX value on note-on
 fn velocity_for(dmx: u8) -> u8 {
     ((dmx as f32 * 127.0 / 255.0).round() as u8).clamp(1, 127)
 }
 
-/// Frequenz-Eingabe in der gewählten Einheit; intern immer Hz
+/// Frequency input in the chosen unit; stored in Hz
 fn freq_drag(ui: &mut egui::Ui, hz: &mut f32, bpm: bool) -> egui::Response {
     if bpm {
         let mut v = *hz * 60.0;
@@ -254,6 +281,16 @@ fn freq_drag(ui: &mut egui::Ui, hz: &mut f32, bpm: bool) -> egui::Response {
         r
     } else {
         ui.add(egui::DragValue::new(hz).range(0.1..=100.0).speed(0.1).suffix(" Hz"))
+    }
+}
+
+/// Black or white text, whichever is readable on this background
+fn text_on(bg: Color32) -> Color32 {
+    let lum = 0.2126 * bg.r() as f32 + 0.7152 * bg.g() as f32 + 0.0722 * bg.b() as f32;
+    if lum > 150.0 {
+        Color32::BLACK
+    } else {
+        Color32::from_rgb(240, 240, 240)
     }
 }
 
@@ -286,7 +323,7 @@ fn report(st: &mut UiState, shared: &Shared, r: Result<String, String>) {
             st.info = Some((true, msg));
             shared.reload_request.store(true, Relaxed);
         }
-        Err(e) => st.info = Some((false, format!("Fehler: {e}"))),
+        Err(e) => st.info = Some((false, tf!("Fehler: {e}", "Error: {e}"))),
     }
 }
 
@@ -308,6 +345,43 @@ fn request_window(params: &BridgeParams, scale: f32) {
     }
 }
 
+fn note_range(fmt: NoteFmt, n1: u8, n2: u8) -> String {
+    match fmt {
+        NoteFmt::Number => format!("{n1}–{n2}"),
+        NoteFmt::Name => format!("{}–{}", config::note_name(n1), config::note_name(n2)),
+        NoteFmt::Both => format!(
+            "{n1}–{n2} ({}–{})",
+            config::note_name(n1),
+            config::note_name(n2)
+        ),
+    }
+}
+
+fn midi_range_text(show: &Show, f: &PatchedFixture, fmt: NoteFmt) -> String {
+    let last = f.channels.len() - 1;
+    match (
+        show.midi_for(f.universe, f.slot(0)),
+        show.midi_for(f.universe, f.slot(last)),
+    ) {
+        (Some((c1, n1)), Some((c2, n2))) if c1 == c2 => {
+            tf!("MIDI {} · Noten {}", "MIDI {} · notes {}", c1 + 1, note_range(fmt, n1, n2))
+        }
+        (Some((c1, n1)), Some((c2, n2))) => tf!(
+            "MIDI {}/{} … MIDI {}/{} (über Blockgrenze)",
+            "MIDI {}/{} … MIDI {}/{} (across blocks)",
+            c1 + 1,
+            config::note_text(n1, fmt),
+            c2 + 1,
+            config::note_text(n2, fmt)
+        ),
+        _ => t("MIDI: teilweise/keine Zuordnung", "MIDI: partly/not mapped").into(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Header and tabs
+// ---------------------------------------------------------------------------
+
 fn header(
     ui: &mut egui::Ui,
     params: &BridgeParams,
@@ -323,9 +397,9 @@ fn header(
         ui.label("Master");
         ui.add(ParamSlider::for_param(&params.master, setter));
         toggle(ui, setter, &params.blackout, "Blackout");
-        toggle(ui, setter, &params.output_enabled, "Art-Net Ausgabe");
+        toggle(ui, setter, &params.output_enabled, t("Art-Net Ausgabe", "Art-Net output"));
 
-        // Skalierung wie bei Waves: feste Stufen, oben rechts
+        // size and language like in Waves plugins: top right
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let mut scale = st.prefs.scale;
             egui::ComboBox::from_id_salt("scale")
@@ -336,11 +410,28 @@ fn header(
                         ui.selectable_value(&mut scale, s, format!("{:.0} %", s * 100.0));
                     }
                 });
-            ui.label("Größe");
+            ui.label(t("Größe", "Size"));
             if scale != st.prefs.scale {
                 st.prefs.scale = scale;
-                let _ = config::write_ui_prefs(&artnet::effective_dir(params), &st.prefs);
+                save_prefs(params, st);
                 request_window(params, scale);
+            }
+
+            ui.add_space(8.0);
+            let mut english = st.prefs.english;
+            egui::ComboBox::from_id_salt("lang")
+                .selected_text(if english { "EN" } else { "DE" })
+                .width(50.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut english, true, "English");
+                    ui.selectable_value(&mut english, false, "Deutsch");
+                });
+            if english != st.prefs.english {
+                st.prefs.english = english;
+                i18n::set_english(english);
+                save_prefs(params, st);
+                // reload so that config messages appear in the new language
+                shared.reload_request.store(true, Relaxed);
             }
         });
     });
@@ -355,38 +446,41 @@ fn header(
     let errors = shared.send_errors.load(Relaxed);
     ui.horizontal_wrapped(|ui| {
         let rate_col = if st.rate > 0.5 { GREEN } else { YELLOW };
-        ui.label(format!("Art-Net an {target}"));
+        ui.label(tf!("Art-Net an {target}", "Art-Net to {target}"));
         ui.label("·");
-        ui.colored_label(rate_col, format!("{:.0} Pakete/s", st.rate));
+        ui.colored_label(rate_col, tf!("{:.0} Pakete/s", "{:.0} packets/s", st.rate));
         ui.label("·");
-        ui.label(format!("Universen [{}]", unis.join(", ")));
+        ui.label(tf!("Universen [{}]", "Universes [{}]", unis.join(", ")));
         if errors > 0 {
             ui.label("·");
-            ui.colored_label(RED, format!("{errors} Sendefehler"));
+            ui.colored_label(RED, tf!("{errors} Sendefehler", "{errors} send errors"));
         }
         if let Some(s) = show {
             let n = s.error_count();
             if n > 0 {
                 ui.label("·");
-                ui.colored_label(RED, format!("{n} Konfig-Fehler (siehe Live)"));
+                ui.colored_label(RED, tf!("{n} Konfig-Fehler (siehe Live)", "{n} config errors (see Live)"));
             }
         }
     });
 
     if !params.output_enabled.value() {
-        ui.colored_label(YELLOW, "Ausgabe deaktiviert – es wird nichts gesendet.");
+        ui.colored_label(
+            YELLOW,
+            t("Ausgabe deaktiviert – es wird nichts gesendet.", "Output disabled – nothing is sent."),
+        );
     } else if params.blackout.value() {
-        ui.colored_label(RED, "BLACKOUT aktiv");
+        ui.colored_label(RED, t("BLACKOUT aktiv", "BLACKOUT active"));
     }
     if let Some(e) = shared.net_error.lock().ok().and_then(|g| g.clone()) {
-        ui.colored_label(RED, format!("Netzwerk: {e}"));
+        ui.colored_label(RED, tf!("Netzwerk: {e}", "Network: {e}"));
     }
-    ui.label(RichText::new(last_midi_text(shared, show)).monospace().small());
+    ui.label(RichText::new(last_midi_text(shared, show, st.prefs.notes)).monospace().small());
 }
 
-fn last_midi_text(shared: &Shared, show: Option<&Show>) -> String {
+fn last_midi_text(shared: &Shared, show: Option<&Show>, fmt: NoteFmt) -> String {
     if shared.event_count.load(Relaxed) == 0 {
-        return "Noch kein MIDI empfangen.".into();
+        return t("Noch kein MIDI empfangen.", "No MIDI received yet.").into();
     }
     let ev = shared.last_event.load(Relaxed);
     let kind = ev >> 24;
@@ -402,23 +496,32 @@ fn last_midi_text(shared: &Shared, show: Option<&Show>) -> String {
         _ => "?",
     };
     if kind == shared::EV_RELEASE {
-        return format!("Letztes MIDI: {kind_s} · Kanal {}", ch + 1);
+        return tf!("Letztes MIDI: {kind_s} · Kanal {}", "Last MIDI: {kind_s} · channel {}", ch + 1);
     }
     let dest = show
         .and_then(|s| {
-            let t = s.midi[ch as usize]?;
-            let slot = t.first_slot() + n as usize;
-            Some(match s.lookup(t.universe, slot) {
-                Some((f, c)) => format!("U{} DMX {} = {}: {}", t.universe, slot + 1, f.name, c.label),
-                None => format!("U{} DMX {} (nicht gepatcht)", t.universe, slot + 1),
+            let m = s.midi[ch as usize]?;
+            let slot = m.first_slot() + n as usize;
+            Some(match s.lookup(m.universe, slot) {
+                Some((f, c)) => format!("U{} DMX {} = {}: {}", m.universe, slot + 1, f.name, c.label),
+                None => tf!(
+                    "U{} DMX {} (nicht gepatcht)",
+                    "U{} DMX {} (not patched)",
+                    m.universe,
+                    slot + 1
+                ),
             })
         })
-        .unwrap_or_else(|| "MIDI-Kanal nicht zugeordnet".into());
-    format!(
-        "Letztes MIDI: {kind_s} · Kanal {} · {} {n} ({}) → {v}  ·  {dest}",
-        ch + 1,
-        if kind == shared::EV_CC { "CC" } else { "Note" },
-        config::note_name(n)
+        .unwrap_or_else(|| t("MIDI-Kanal nicht zugeordnet", "MIDI channel not mapped").into());
+    let what = if kind == shared::EV_CC {
+        format!("CC {n}")
+    } else {
+        format!("{} {}", t("Note", "note"), config::note_text(n, fmt))
+    };
+    tf!(
+        "Letztes MIDI: {kind_s} · Kanal {} · {what} → {v}  ·  {dest}",
+        "Last MIDI: {kind_s} · channel {} · {what} → {v}  ·  {dest}",
+        ch + 1
     )
 }
 
@@ -430,17 +533,18 @@ fn tab_bar(ui: &mut egui::Ui, st: &mut UiState) {
         (Tab::Live, "Live", false),
         (Tab::Patch, "Patch", patch_dirty),
         (Tab::Fixtures, "Fixtures", fx_dirty),
-        (Tab::Library, "QLC+ Bibliothek", false),
-        (Tab::Settings, "Einstellungen", settings_dirty),
+        (Tab::Library, t("QLC+ Bibliothek", "QLC+ library"), false),
+        (Tab::Settings, t("Einstellungen", "Settings"), settings_dirty),
     ];
     ui.horizontal_wrapped(|ui| {
-        for (t, label, dirty) in tabs {
+        for (tab, label, dirty) in tabs {
             let text = if dirty { format!("{label} •") } else { label.to_string() };
+            // real buttons: the inactive ones keep their grey frame
             if ui
-                .selectable_label(st.tab == t, RichText::new(text).strong())
+                .add(egui::Button::new(RichText::new(text).strong()).selected(st.tab == tab))
                 .clicked()
             {
-                st.tab = t;
+                st.tab = tab;
                 st.info = None;
             }
         }
@@ -452,20 +556,30 @@ fn tab_bar(ui: &mut egui::Ui, st: &mut UiState) {
 // ---------------------------------------------------------------------------
 
 fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32, st: &mut UiState) {
-    let bpm = st.bpm;
-    for m in show.messages.iter().filter(|m| m.level != Level::Info) {
-        match m.level {
-            Level::Error => ui.colored_label(RED, format!("Fehler: {}", m.text)),
-            _ => ui.colored_label(YELLOW, format!("Hinweis: {}", m.text)),
-        };
+    let bpm = st.prefs.bpm;
+    let fmt = st.prefs.notes;
+
+    let problems: Vec<_> = show.messages.iter().filter(|m| m.level != Level::Info).collect();
+    if !problems.is_empty() {
+        section(ui, t("Hinweise zur Konfiguration", "Configuration notes"), |ui| {
+            for m in problems {
+                match m.level {
+                    Level::Error => ui.colored_label(RED, tf!("Fehler: {}", "Error: {}", m.text)),
+                    _ => ui.colored_label(YELLOW, tf!("Hinweis: {}", "Note: {}", m.text)),
+                };
+            }
+        });
+        ui.add_space(6.0);
     }
 
     if show.fixtures.is_empty() {
-        ui.label("Keine Geräte gepatcht – im Tab „Patch“ oder „QLC+ Bibliothek“ hinzufügen.");
+        ui.label(t(
+            "Keine Geräte gepatcht – im Tab „Patch“ oder „QLC+ Bibliothek“ hinzufügen.",
+            "No devices patched – add some in the “Patch” or “QLC+ library” tab.",
+        ));
         return;
     }
-    let t = ui.input(|i| i.time);
-    let scale = 1.0;
+    let time = ui.input(|i| i.time);
 
     let all_vals: Vec<Vec<u8>> = show
         .fixtures
@@ -478,182 +592,258 @@ fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32, st: &m
         })
         .collect();
 
-    ui.heading("Bühne");
-    ui.horizontal_wrapped(|ui| {
-        for (f, vals) in show.fixtures.iter().zip(&all_vals) {
-            let p = preview::compute(f, vals, t);
-            ui.vertical(|ui| {
-                ui.set_max_width(80.0 * scale);
-                let (rect, resp) = ui.allocate_exact_size(
-                    egui::vec2(72.0 * scale, 44.0 * scale),
-                    egui::Sense::hover(),
-                );
-                let fill = if p.lit {
-                    Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2])
-                } else {
-                    Color32::from_rgb(18, 18, 18)
-                };
-                ui.painter().rect_filled(rect, 4.0, fill);
-                if let preview::Shutter::Blink { hz, .. } = p.shutter {
-                    ui.painter().text(
-                        rect.right_bottom() - egui::vec2(3.0, 2.0),
-                        egui::Align2::RIGHT_BOTTOM,
-                        freq_text(hz, bpm),
-                        egui::FontId::proportional(11.0 * scale),
-                        Color32::from_rgb(240, 240, 240),
-                    );
+    // ---- stage ----
+    let mut tile = st.prefs.tile;
+    section(ui, t("Bühne", "Stage"), |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(t("Info unter den Kacheln:", "Info below tiles:")).small());
+            egui::ComboBox::from_id_salt("tileinfo")
+                .selected_text(tile_info_label(tile))
+                .width(110.0)
+                .show_ui(ui, |ui| {
+                    for ti in [TileInfo::Nothing, TileInfo::Address, TileInfo::Dimmer, TileInfo::Midi] {
+                        ui.selectable_value(&mut tile, ti, tile_info_label(ti));
+                    }
+                });
+        });
+        ui.add_space(4.0);
+        egui::Frame::NONE.fill(STAGE_BG).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                for (f, vals) in show.fixtures.iter().zip(&all_vals) {
+                    stage_tile(ui, show, f, vals, time, bpm, fmt, tile);
                 }
-                resp.on_hover_text(format!(
-                    "{}\n{} · {}\nU{} · DMX {}\n{}",
-                    f.name,
-                    f.type_name,
-                    f.mode_name,
-                    f.universe,
-                    f.address,
-                    midi_range_text(show, f)
-                ));
-                ui.label(RichText::new(f.name.as_str()).small());
             });
-        }
+        });
     });
+    if tile != st.prefs.tile {
+        st.prefs.tile = tile;
+        st.prefs_dirty = true;
+    }
 
     ui.add_space(8.0);
-    ui.heading("Fader");
-    ui.label(
-        RichText::new("Fader setzen den Wert direkt – das nächste MIDI-Event auf dem Kanal überschreibt ihn.")
+
+    // ---- faders ----
+    section(ui, "Fader", |ui| {
+        ui.label(
+            RichText::new(t(
+                "Fader setzen den Wert direkt – das nächste MIDI-Event auf dem Kanal überschreibt ihn.",
+                "Faders set the value directly – the next MIDI event on that channel overrides it.",
+            ))
             .weak()
             .small(),
-    );
+        );
+        for (i, (f, vals)) in show.fixtures.iter().zip(&all_vals).enumerate() {
+            fader_block(ui, show, shared, st, i, f, vals, bpm, fmt);
+        }
+    });
+}
 
-    for (i, (f, vals)) in show.fixtures.iter().zip(&all_vals).enumerate() {
-        let buf = shared.buffer_for_universe(f.universe);
-        let title = format!(
-            "{}   ·   {} ({})   ·   U{} DMX {}–{}   ·   {}",
+fn tile_info_label(ti: TileInfo) -> &'static str {
+    match ti {
+        TileInfo::Nothing => t("nichts", "nothing"),
+        TileInfo::Address => t("DMX-Adresse", "DMX address"),
+        TileInfo::Dimmer => "Dimmer %",
+        TileInfo::Midi => t("MIDI-Noten", "MIDI notes"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_tile(
+    ui: &mut egui::Ui,
+    show: &Show,
+    f: &PatchedFixture,
+    vals: &[u8],
+    time: f64,
+    bpm: bool,
+    fmt: NoteFmt,
+    tile: TileInfo,
+) {
+    let p = preview::compute(f, vals, time);
+    ui.vertical(|ui| {
+        ui.set_max_width(80.0);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(72.0, 44.0), egui::Sense::hover());
+        let fill = if p.lit {
+            Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2])
+        } else {
+            Color32::from_rgb(18, 18, 18)
+        };
+        ui.painter().rect_filled(rect, 4.0, fill);
+        if let preview::Shutter::Blink { hz, .. } = p.shutter {
+            // high contrast: black on bright, white on dark – also while flashing white
+            ui.painter().text(
+                rect.right_bottom() - egui::vec2(3.0, 2.0),
+                egui::Align2::RIGHT_BOTTOM,
+                freq_text(hz, bpm),
+                egui::FontId::proportional(11.0),
+                text_on(fill),
+            );
+        }
+        resp.on_hover_text(format!(
+            "{}\n{} · {}\nU{} · DMX {}\n{}",
             f.name,
             f.type_name,
             f.mode_name,
             f.universe,
             f.address,
-            f.address as usize + f.channels.len() - 1,
-            midi_range_text(show, f)
-        );
-        ui.push_id(i, |ui| {
-            egui::CollapsingHeader::new(title)
-                .default_open(show.fixtures.len() <= 2)
-                .show(ui, |ui| {
-                    if buf.is_none() {
-                        ui.colored_label(
-                            YELLOW,
+            midi_range_text(show, f, fmt)
+        ));
+        ui.label(RichText::new(f.name.as_str()).small());
+        let extra = match tile {
+            TileInfo::Nothing => None,
+            TileInfo::Address => Some(format!("U{} · {}", f.universe, f.address)),
+            TileInfo::Dimmer => f
+                .channels
+                .iter()
+                .position(|c| c.kind == ChanKind::Dimmer)
+                .map(|c| format!("{:.0} %", vals[c] as f32 / 2.55)),
+            TileInfo::Midi => show.midi_for(f.universe, f.slot(0)).map(|(mc, n1)| {
+                let n2 = show
+                    .midi_for(f.universe, f.slot(f.channels.len() - 1))
+                    .map_or(n1, |(_, n)| n);
+                format!("M{} · {}", mc + 1, note_range(fmt, n1, n2))
+            }),
+        };
+        if let Some(x) = extra {
+            ui.label(RichText::new(x).small().weak());
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fader_block(
+    ui: &mut egui::Ui,
+    show: &Show,
+    shared: &Shared,
+    st: &mut UiState,
+    i: usize,
+    f: &PatchedFixture,
+    vals: &[u8],
+    bpm: bool,
+    fmt: NoteFmt,
+) {
+    let buf = shared.buffer_for_universe(f.universe);
+    let title = format!(
+        "{}   ·   {} ({})   ·   U{} DMX {}–{}   ·   {}",
+        f.name,
+        f.type_name,
+        f.mode_name,
+        f.universe,
+        f.address,
+        f.address as usize + f.channels.len() - 1,
+        midi_range_text(show, f, fmt)
+    );
+    ui.push_id(i, |ui| {
+        egui::CollapsingHeader::new(title)
+            .default_open(show.fixtures.len() <= 2)
+            .show(ui, |ui| {
+                if buf.is_none() {
+                    ui.colored_label(
+                        YELLOW,
+                        t(
                             "Universum ist keinem MIDI-Kanal zugeordnet – wird nicht gesendet.",
+                            "Universe is not mapped to a MIDI channel – not sent.",
+                        ),
+                    );
+                }
+                egui::Grid::new("chans").striped(true).show(ui, |ui| {
+                    for (c, ch) in f.channels.iter().enumerate() {
+                        let slot = f.slot(c);
+                        ui.label(format!("{}", slot + 1));
+                        ui.label(ch.label.as_str());
+                        ui.label(RichText::new(ch.kind.label()).weak());
+                        match buf {
+                            Some(b) => {
+                                let mut v = shared.raw_value(b, slot);
+                                if ui.add(egui::Slider::new(&mut v, 0..=255u8)).changed() {
+                                    shared.set_manual(b, slot, v);
+                                }
+                            }
+                            None => {
+                                ui.label("–");
+                            }
+                        }
+                        let out = vals[c];
+                        ui.label(ch.cap_at(out).map(|cap| describe_cap(cap, out, bpm)).unwrap_or_default());
+                        ui.label(
+                            RichText::new(match show.midi_for(f.universe, slot) {
+                                Some((mc, n)) => format!(
+                                    "MIDI {} · {} {}",
+                                    mc + 1,
+                                    t("Note", "note"),
+                                    config::note_text(n, fmt)
+                                ),
+                                None => t("keine MIDI-Zuordnung", "no MIDI mapping").into(),
+                            })
+                            .weak(),
                         );
-                    }
-                    egui::Grid::new("chans").striped(true).show(ui, |ui| {
-                        for (c, ch) in f.channels.iter().enumerate() {
-                            let slot = f.slot(c);
-                            ui.label(format!("{}", slot + 1));
-                            ui.label(ch.label.as_str());
-                            ui.label(RichText::new(ch.kind.label()).weak());
-                            match buf {
-                                Some(b) => {
-                                    let mut v = shared.raw_value(b, slot);
-                                    if ui.add(egui::Slider::new(&mut v, 0..=255u8)).changed() {
-                                        shared.set_manual(b, slot, v);
+                        ui.end_row();
+
+                        // strobe calculator: wanted frequency → DMX value / velocity
+                        let strobe_caps: Vec<&Capability> = ch
+                            .caps
+                            .iter()
+                            .filter(|k| matches!(k.effect, Effect::Strobe { .. }))
+                            .collect();
+                        if !strobe_caps.is_empty() {
+                            let target = st.strobe_target.entry((i, c)).or_insert(8.0);
+                            ui.label("");
+                            ui.label(RichText::new(t("Wunschfrequenz", "Target frequency")).weak());
+                            ui.horizontal(|ui| {
+                                freq_drag(ui, target, bpm);
+                                ui.label(RichText::new(format!("= {}", freq_text(*target, !bpm))).weak());
+                            });
+                            let hit = strobe_caps.iter().find_map(|k| k.value_for_hz(*target));
+                            match hit {
+                                Some(dmx) => {
+                                    let vel = velocity_for(dmx);
+                                    // velocity has only 128 steps → show the real frequency
+                                    let dmx_from_vel = shared::to_dmx(vel as f32 / 127.0);
+                                    let real = strobe_caps
+                                        .iter()
+                                        .find_map(|k| {
+                                            k.strobe_hz(dmx_from_vel).filter(|_| k.cap_contains(dmx_from_vel))
+                                        })
+                                        .map(|hz| format!(" (≈ {})", freq_text(hz, bpm)))
+                                        .unwrap_or_default();
+                                    ui.label(format!("→ DMX {dmx}"));
+                                    ui.label(RichText::new(format!("Velocity {vel}{real}")).strong());
+                                    if let Some(b) = buf {
+                                        if ui.button(t("setzen", "set")).clicked() {
+                                            shared.set_manual(b, slot, dmx);
+                                        }
+                                    } else {
+                                        ui.label("");
                                     }
                                 }
                                 None => {
-                                    ui.label("–");
-                                }
-                            }
-                            let out = vals[c];
-                            ui.label(ch.cap_at(out).map(|cap| describe_cap(cap, out, bpm)).unwrap_or_default());
-                            ui.label(
-                                RichText::new(match show.midi_for(f.universe, slot) {
-                                    Some((mc, n)) => {
-                                        format!("MIDI {} · Note {n} ({})", mc + 1, config::note_name(n))
-                                    }
-                                    None => "keine MIDI-Zuordnung".into(),
-                                })
-                                .weak(),
-                            );
-                            ui.end_row();
-
-                            // Strobe-Rechner: Wunschfrequenz → DMX-Wert / Velocity
-                            let strobe_caps: Vec<&Capability> = ch
-                                .caps
-                                .iter()
-                                .filter(|k| matches!(k.effect, Effect::Strobe { .. }))
-                                .collect();
-                            if !strobe_caps.is_empty() {
-                                let target = st.strobe_target.entry((i, c)).or_insert(8.0);
-                                ui.label("");
-                                ui.label(RichText::new("Wunschfrequenz").weak());
-                                ui.horizontal(|ui| {
-                                    freq_drag(ui, target, bpm);
-                                    // Umrechnung in die jeweils andere Einheit
-                                    ui.label(RichText::new(format!("= {}", freq_text(*target, !bpm))).weak());
-                                });
-                                let hit = strobe_caps.iter().find_map(|k| k.value_for_hz(*target));
-                                match hit {
-                                    Some(dmx) => {
-                                        let vel = velocity_for(dmx);
-                                        // Velocity hat nur 128 Stufen → tatsächliche Frequenz zeigen
-                                        let dmx_from_vel = shared::to_dmx(vel as f32 / 127.0);
-                                        let real = strobe_caps
-                                            .iter()
-                                            .find_map(|k| k.strobe_hz(dmx_from_vel).filter(|_| k.cap_contains(dmx_from_vel)))
-                                            .map(|hz| format!(" (≈ {})", freq_text(hz, bpm)))
-                                            .unwrap_or_default();
-                                        ui.label(format!("→ DMX {dmx}"));
-                                        ui.label(RichText::new(format!("Velocity {vel}{real}")).strong());
-                                        if let Some(b) = buf {
-                                            if ui.button("setzen").clicked() {
-                                                shared.set_manual(b, slot, dmx);
+                                    let (lo, hi) = strobe_caps.iter().fold((f32::MAX, 0f32), |(lo, hi), k| {
+                                        match k.effect {
+                                            Effect::Strobe { from, to, .. } => {
+                                                (lo.min(from.min(to)), hi.max(from.max(to)))
                                             }
-                                        } else {
-                                            ui.label("");
-                                        }
-                                    }
-                                    None => {
-                                        let (lo, hi) = strobe_caps.iter().fold((f32::MAX, 0f32), |(lo, hi), k| match k.effect {
-                                            Effect::Strobe { from, to, .. } => (lo.min(from.min(to)), hi.max(from.max(to))),
                                             _ => (lo, hi),
-                                        });
-                                        ui.colored_label(
-                                            YELLOW,
-                                            format!("außerhalb ({}–{})", freq_text(lo, bpm), freq_text(hi, bpm)),
-                                        );
-                                        ui.label("");
-                                        ui.label("");
-                                    }
+                                        }
+                                    });
+                                    ui.colored_label(
+                                        YELLOW,
+                                        tf!(
+                                            "außerhalb ({}–{})",
+                                            "out of range ({}–{})",
+                                            freq_text(lo, bpm),
+                                            freq_text(hi, bpm)
+                                        ),
+                                    );
+                                    ui.label("");
+                                    ui.label("");
                                 }
-                                ui.end_row();
                             }
+                            ui.end_row();
                         }
-                    });
+                    }
                 });
-        });
-    }
-}
-
-fn midi_range_text(show: &Show, f: &PatchedFixture) -> String {
-    let last = f.channels.len() - 1;
-    match (
-        show.midi_for(f.universe, f.slot(0)),
-        show.midi_for(f.universe, f.slot(last)),
-    ) {
-        (Some((c1, n1)), Some((c2, n2))) if c1 == c2 => format!(
-            "MIDI {} · Noten {n1}–{n2} ({}–{})",
-            c1 + 1,
-            config::note_name(n1),
-            config::note_name(n2)
-        ),
-        (Some((c1, n1)), Some((c2, n2))) => format!(
-            "MIDI {}/{n1} … MIDI {}/{n2} (über Blockgrenze)",
-            c1 + 1,
-            c2 + 1
-        ),
-        _ => "MIDI: teilweise/keine Zuordnung".into(),
-    }
+            });
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -669,13 +859,13 @@ enum RowAction {
 fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) {
     let dirty = st.patch != st.patch_base;
     ui.horizontal_wrapped(|ui| {
-        if ui.button("+ Gerät").clicked() {
-            if let Some(t) = show.types.first() {
-                let len = t.ft.modes.first().map_or(1, |m| m.channels.len());
+        if ui.button(t("+ Gerät", "+ Device")).clicked() {
+            if let Some(ti) = show.types.first() {
+                let len = ti.ft.modes.first().map_or(1, |m| m.channels.len());
                 let address = show.next_free_address(&st.patch, 0, len).unwrap_or(1);
                 st.patch.push(PatchEntry {
-                    name: t.ft.name.clone(),
-                    fixture: t.ft.id.clone(),
+                    name: ti.ft.name.clone(),
+                    fixture: ti.ft.id.clone(),
                     universe: 0,
                     address,
                     mode: None,
@@ -684,141 +874,169 @@ fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) 
                 });
             }
         }
-        if ui.add_enabled(dirty, egui::Button::new("Speichern")).clicked() {
-            let r = config::write_patch(&show.dir, &st.patch).map(|_| "patch.txt gespeichert".to_string());
+        ui.separator();
+        if ui.add_enabled(dirty, egui::Button::new(t("Speichern", "Save"))).clicked() {
+            let r = config::write_patch(&show.dir, &st.patch)
+                .map(|_| t("patch.txt gespeichert", "patch.txt saved").to_string());
             if r.is_ok() {
                 st.patch_base = st.patch.clone();
             }
             report(st, shared, r);
         }
-        if ui.add_enabled(dirty, egui::Button::new("Verwerfen")).clicked() {
+        if ui.add_enabled(dirty, egui::Button::new(t("Verwerfen", "Discard"))).clicked() {
             st.patch = show.patch.clone();
             st.patch_base = show.patch.clone();
         }
         if dirty {
-            ui.colored_label(YELLOW, "ungespeicherte Änderungen");
+            ui.colored_label(YELLOW, t("ungespeicherte Änderungen", "unsaved changes"));
         }
     });
     info_line(ui, st);
     ui.label(
-        RichText::new("Neue Gerätetypen findest du im Tab „QLC+ Bibliothek“ oder legst sie unter „Fixtures“ an.")
-            .weak()
-            .small(),
+        RichText::new(t(
+            "Neue Gerätetypen findest du im Tab „QLC+ Bibliothek“ oder legst sie unter „Fixtures“ an.",
+            "New device types: see the “QLC+ library” tab or create them under “Fixtures”.",
+        ))
+        .weak()
+        .small(),
     );
     ui.add_space(4.0);
 
-    if st.patch.is_empty() {
-        ui.label("Noch keine Geräte gepatcht.");
-    }
+    section(ui, t("Geräte", "Devices"), |ui| {
+        if st.patch.is_empty() {
+            ui.label(t("Noch keine Geräte gepatcht.", "No devices patched yet."));
+        }
 
-    let mut action: Option<RowAction> = None;
-    let n = st.patch.len();
-    egui::Grid::new("patchgrid")
-        .striped(true)
-        .num_columns(9)
-        .show(ui, |ui| {
-            for h in ["Name", "Fixture", "Modus", "Univ.", "Adresse", "Anzahl", "Kanäle", "DMX", ""] {
-                ui.label(RichText::new(h).strong());
-            }
-            ui.end_row();
+        let mut action: Option<RowAction> = None;
+        let n = st.patch.len();
+        egui::Grid::new("patchgrid")
+            .striped(true)
+            .num_columns(9)
+            .show(ui, |ui| {
+                for h in [
+                    t("Name", "Name"),
+                    "Fixture",
+                    t("Modus", "Mode"),
+                    t("Univ.", "Univ."),
+                    t("Adresse", "Address"),
+                    t("Anzahl", "Count"),
+                    t("Kanäle", "Channels"),
+                    "DMX",
+                    "",
+                ] {
+                    ui.label(RichText::new(h).strong());
+                }
+                ui.end_row();
 
-            for i in 0..n {
-                let e = &mut st.patch[i];
-                ui.add(egui::TextEdit::singleline(&mut e.name).desired_width(150.0));
+                for i in 0..n {
+                    let e = &mut st.patch[i];
+                    let name_resp = ui.add(egui::TextEdit::singleline(&mut e.name).desired_width(220.0));
+                    name_resp.on_hover_text(e.name.clone());
 
-                let tinfo = show.type_info(&e.fixture);
-                let fx_label = tinfo
-                    .map(|t| t.ft.name.clone())
-                    .unwrap_or_else(|| format!("‹fehlt: {}›", e.fixture));
-                egui::ComboBox::from_id_salt(("fx", i))
-                    .selected_text(fx_label)
-                    .width(200.0)
-                    .show_ui(ui, |ui| {
-                        for t in &show.types {
-                            let src = if t.is_qxf { "QLC+" } else { "txt" };
-                            if ui
-                                .selectable_label(e.fixture == t.ft.id, format!("{}  ({src})", t.ft.name))
-                                .clicked()
-                            {
-                                e.fixture = t.ft.id.clone();
-                                e.mode = None;
+                    let tinfo = show.type_info(&e.fixture);
+                    let fx_label = tinfo
+                        .map(|ti| ti.ft.name.clone())
+                        .unwrap_or_else(|| tf!("‹fehlt: {}›", "‹missing: {}›", e.fixture));
+                    egui::ComboBox::from_id_salt(("fx", i))
+                        .selected_text(fx_label)
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            for ti in &show.types {
+                                let src = if ti.is_qxf { "QLC+" } else { "txt" };
+                                if ui
+                                    .selectable_label(e.fixture == ti.ft.id, format!("{}  ({src})", ti.ft.name))
+                                    .clicked()
+                                {
+                                    e.fixture = ti.ft.id.clone();
+                                    e.mode = None;
+                                }
                             }
+                        });
+
+                    match tinfo.filter(|ti| ti.ft.modes.len() > 1) {
+                        Some(ti) => {
+                            let cur = config::pick_mode(&ti.ft, e.mode.as_deref())
+                                .map(|m| m.name.clone())
+                                .unwrap_or_else(|| "?".into());
+                            egui::ComboBox::from_id_salt(("mode", i))
+                                .selected_text(cur.clone())
+                                .show_ui(ui, |ui| {
+                                    for m in &ti.ft.modes {
+                                        if ui
+                                            .selectable_label(
+                                                cur == m.name,
+                                                tf!("{} ({} Kan.)", "{} ({} ch.)", m.name, m.channels.len()),
+                                            )
+                                            .clicked()
+                                        {
+                                            e.mode = Some(m.name.clone());
+                                        }
+                                    }
+                                });
+                        }
+                        None => {
+                            ui.label("–");
+                        }
+                    }
+
+                    ui.add(egui::DragValue::new(&mut e.universe).range(0..=config::MAX_UNIVERSE));
+                    ui.add(egui::DragValue::new(&mut e.address).range(1..=512));
+                    ui.add(egui::DragValue::new(&mut e.count).range(1..=512));
+
+                    let len = show.entry_channels(e);
+                    ui.label(len.to_string());
+                    let last = e.address as usize + len.max(1) - 1;
+                    let dmx = if e.count > 1 {
+                        format!("{}–{} (×{})", e.address, last, e.count)
+                    } else {
+                        format!("{}–{}", e.address, last)
+                    };
+                    ui.label(dmx);
+
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(i > 0, egui::Button::new("⏶")).clicked() {
+                            action = Some(RowAction::Up(i));
+                        }
+                        if ui.add_enabled(i + 1 < n, egui::Button::new("⏷")).clicked() {
+                            action = Some(RowAction::Down(i));
+                        }
+                        if ui.button(t("Entfernen", "Remove")).clicked() {
+                            action = Some(RowAction::Remove(i));
                         }
                     });
-
-                match tinfo.filter(|t| t.ft.modes.len() > 1) {
-                    Some(t) => {
-                        let cur = config::pick_mode(&t.ft, e.mode.as_deref())
-                            .map(|m| m.name.clone())
-                            .unwrap_or_else(|| "?".into());
-                        egui::ComboBox::from_id_salt(("mode", i))
-                            .selected_text(cur.clone())
-                            .show_ui(ui, |ui| {
-                                for m in &t.ft.modes {
-                                    if ui
-                                        .selectable_label(cur == m.name, format!("{} ({} Kan.)", m.name, m.channels.len()))
-                                        .clicked()
-                                    {
-                                        e.mode = Some(m.name.clone());
-                                    }
-                                }
-                            });
-                    }
-                    None => {
-                        ui.label("–");
-                    }
+                    ui.end_row();
                 }
+            });
 
-                ui.add(egui::DragValue::new(&mut e.universe).range(0..=config::MAX_UNIVERSE));
-                ui.add(egui::DragValue::new(&mut e.address).range(1..=512));
-                ui.add(egui::DragValue::new(&mut e.count).range(1..=512));
-
-                let len = show.entry_channels(e);
-                ui.label(len.to_string());
-                let last = e.address as usize + len.max(1) - 1;
-                let dmx = if e.count > 1 {
-                    format!("{}–{} (×{})", e.address, last, e.count)
-                } else {
-                    format!("{}–{}", e.address, last)
-                };
-                ui.label(dmx);
-
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(i > 0, egui::Button::new("⏶")).clicked() {
-                        action = Some(RowAction::Up(i));
-                    }
-                    if ui.add_enabled(i + 1 < n, egui::Button::new("⏷")).clicked() {
-                        action = Some(RowAction::Down(i));
-                    }
-                    if ui.button("Entfernen").clicked() {
-                        action = Some(RowAction::Remove(i));
-                    }
-                });
-                ui.end_row();
+        match action {
+            Some(RowAction::Up(i)) => st.patch.swap(i, i - 1),
+            Some(RowAction::Down(i)) => st.patch.swap(i, i + 1),
+            Some(RowAction::Remove(i)) => {
+                st.patch.remove(i);
             }
-        });
-
-    match action {
-        Some(RowAction::Up(i)) => st.patch.swap(i, i - 1),
-        Some(RowAction::Down(i)) => st.patch.swap(i, i + 1),
-        Some(RowAction::Remove(i)) => {
-            st.patch.remove(i);
+            None => {}
         }
-        None => {}
-    }
+    });
 
     let msgs: Vec<_> = show
         .messages
         .iter()
-        .filter(|m| m.level != Level::Info && (m.text.starts_with("patch.txt") || m.text.contains("Überschneidung") || m.text.contains("MIDI-Zuordnung")))
+        .filter(|m| {
+            m.level != Level::Info
+                && (m.text.starts_with("patch.txt")
+                    || m.text.contains("Überschneidung")
+                    || m.text.contains("Overlap")
+                    || m.text.contains("MIDI"))
+        })
         .collect();
     if !msgs.is_empty() {
         ui.add_space(6.0);
-        ui.label(RichText::new("Stand der gespeicherten Datei:").weak());
-        for m in msgs {
-            let col = if m.level == Level::Error { RED } else { YELLOW };
-            ui.colored_label(col, m.text.as_str());
-        }
+        section(ui, t("Stand der gespeicherten Datei", "Saved file status"), |ui| {
+            for m in msgs {
+                let col = if m.level == Level::Error { RED } else { YELLOW };
+                ui.colored_label(col, m.text.as_str());
+            }
+        });
     }
 }
 
@@ -827,193 +1045,244 @@ fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) 
 // ---------------------------------------------------------------------------
 
 fn load_fx_edit(show: &Show, id: &str) -> Option<FxEdit> {
-    let t = show.type_info(id).filter(|t| !t.is_qxf)?;
-    let channels = t.ft.modes[0].channels.clone();
+    let ti = show.type_info(id).filter(|ti| !ti.is_qxf)?;
+    let channels = ti.ft.modes[0].channels.clone();
     Some(FxEdit {
         id: id.to_string(),
-        name: t.ft.name.clone(),
+        name: ti.ft.name.clone(),
         open_caps: vec![false; channels.len()],
-        base: Some((t.ft.name.clone(), channels.clone())),
+        base: Some((ti.ft.name.clone(), channels.clone())),
         channels,
     })
 }
 
 fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) {
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Fixture:");
-        let sel_label = st
-            .fx_sel
-            .as_ref()
-            .and_then(|id| show.type_info(id).map(|t| t.ft.name.clone()).or_else(|| Some(format!("{id} (neu)"))))
-            .unwrap_or_else(|| "– auswählen –".into());
-        let mut picked: Option<String> = None;
-        egui::ComboBox::from_id_salt("fxsel")
-            .selected_text(sel_label)
-            .width(300.0)
-            .show_ui(ui, |ui| {
-                for t in &show.types {
-                    let src = if t.is_qxf { "QLC+" } else { "txt" };
-                    if ui
-                        .selectable_label(st.fx_sel.as_deref() == Some(t.ft.id.as_str()), format!("{}  ({src})", t.ft.name))
-                        .clicked()
-                    {
-                        picked = Some(t.ft.id.clone());
-                    }
-                }
-            });
-        if let Some(id) = picked {
-            st.fx_edit = load_fx_edit(show, &id);
-            st.fx_sel = Some(id);
-            st.qxf_copy_mode = 0;
-            st.info = None;
-        }
-
-        ui.add_space(20.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut st.new_fx_name)
-                .hint_text("Name für neues Fixture")
-                .desired_width(200.0),
-        );
-        if ui
-            .add_enabled(!st.new_fx_name.trim().is_empty(), egui::Button::new("Neu anlegen"))
-            .clicked()
-        {
-            let name = st.new_fx_name.trim().to_string();
-            let id = config::unique_fixture_id(&show.dir, &name);
-            st.fx_edit = Some(FxEdit {
-                id: id.clone(),
-                name,
-                channels: vec![FixtureChannel {
-                    kind: ChanKind::Dimmer,
-                    label: "Dimmer".into(),
-                    rest: 0,
-                    caps: Vec::new(),
-                }],
-                open_caps: vec![false],
-                base: None,
-            });
-            st.fx_sel = Some(id);
-            st.new_fx_name.clear();
-        }
-    });
-    info_line(ui, st);
-    ui.separator();
-
-    // QLC+-Fixture: nur ansehen, als Textkopie bearbeitbar
-    if st.fx_edit.is_none() {
-        if let Some(t) = st.fx_sel.as_deref().and_then(|id| show.type_info(id)) {
-            if t.is_qxf {
-                ui.label(RichText::new(t.ft.name.as_str()).heading());
-                ui.label(format!(
-                    "QLC+-Definition (fixtures/{}). Zum Bearbeiten eine Textkopie eines Modus anlegen:",
-                    t.file
-                ));
-                ui.horizontal_wrapped(|ui| {
-                    egui::ComboBox::from_id_salt("qxfmode")
-                        .selected_text(
-                            t.ft.modes
-                                .get(st.qxf_copy_mode)
-                                .map(|m| m.name.clone())
-                                .unwrap_or_default(),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (i, m) in t.ft.modes.iter().enumerate() {
-                                ui.selectable_value(&mut st.qxf_copy_mode, i, format!("{} ({} Kan.)", m.name, m.channels.len()));
-                            }
-                        });
-                    if ui.button("Als bearbeitbare Textdatei kopieren").clicked() {
-                        if let Some(m) = t.ft.modes.get(st.qxf_copy_mode) {
-                            let id = config::unique_fixture_id(&show.dir, &format!("{}_eigen", t.ft.id));
-                            st.fx_edit = Some(FxEdit {
-                                id: id.clone(),
-                                name: format!("{} ({})", t.ft.name, m.name),
-                                open_caps: vec![false; m.channels.len()],
-                                channels: m.channels.clone(),
-                                base: None,
-                            });
-                            st.fx_sel = Some(id);
+    let bpm = st.prefs.bpm;
+    section(ui, t("Fixture wählen oder anlegen", "Choose or create a fixture"), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            let sel_label = st
+                .fx_sel
+                .as_ref()
+                .and_then(|id| {
+                    show.type_info(id)
+                        .map(|ti| ti.ft.name.clone())
+                        .or_else(|| Some(tf!("{id} (neu)", "{id} (new)")))
+                })
+                .unwrap_or_else(|| t("– auswählen –", "– select –").into());
+            let mut picked: Option<String> = None;
+            egui::ComboBox::from_id_salt("fxsel")
+                .selected_text(sel_label)
+                .width(300.0)
+                .show_ui(ui, |ui| {
+                    for ti in &show.types {
+                        let src = if ti.is_qxf { "QLC+" } else { "txt" };
+                        if ui
+                            .selectable_label(
+                                st.fx_sel.as_deref() == Some(ti.ft.id.as_str()),
+                                format!("{}  ({src})", ti.ft.name),
+                            )
+                            .clicked()
+                        {
+                            picked = Some(ti.ft.id.clone());
                         }
                     }
                 });
-                if let Some(m) = t.ft.modes.get(st.qxf_copy_mode) {
-                    channel_overview(ui, &m.channels);
-                }
+            if let Some(id) = picked {
+                st.fx_edit = load_fx_edit(show, &id);
+                st.fx_sel = Some(id);
+                st.qxf_copy_mode = 0;
+                st.info = None;
+            }
+
+            ui.separator();
+            ui.add(
+                egui::TextEdit::singleline(&mut st.new_fx_name)
+                    .hint_text(t("Name für neues Fixture", "Name for a new fixture"))
+                    .desired_width(200.0),
+            );
+            if ui
+                .add_enabled(!st.new_fx_name.trim().is_empty(), egui::Button::new(t("Neu anlegen", "Create")))
+                .clicked()
+            {
+                let name = st.new_fx_name.trim().to_string();
+                let id = config::unique_fixture_id(&show.dir, &name);
+                st.fx_edit = Some(FxEdit {
+                    id: id.clone(),
+                    name,
+                    channels: vec![FixtureChannel {
+                        kind: ChanKind::Dimmer,
+                        label: "Dimmer".into(),
+                        rest: 0,
+                        caps: Vec::new(),
+                    }],
+                    open_caps: vec![false],
+                    base: None,
+                });
+                st.fx_sel = Some(id);
+                st.new_fx_name.clear();
+            }
+        });
+        info_line(ui, st);
+    });
+    ui.add_space(6.0);
+
+    // QLC+ fixture: view only, editable as a text copy
+    if st.fx_edit.is_none() {
+        if let Some(ti) = st.fx_sel.as_deref().and_then(|id| show.type_info(id)) {
+            if ti.is_qxf {
+                section(ui, ti.ft.name.as_str(), |ui| {
+                    ui.label(tf!(
+                        "QLC+-Definition (fixtures/{}). Zum Bearbeiten eine Textkopie eines Modus anlegen:",
+                        "QLC+ definition (fixtures/{}). To edit it, create a text copy of one mode:",
+                        ti.file
+                    ));
+                    ui.horizontal_wrapped(|ui| {
+                        egui::ComboBox::from_id_salt("qxfmode")
+                            .selected_text(
+                                ti.ft.modes
+                                    .get(st.qxf_copy_mode)
+                                    .map(|m| m.name.clone())
+                                    .unwrap_or_default(),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (i, m) in ti.ft.modes.iter().enumerate() {
+                                    ui.selectable_value(
+                                        &mut st.qxf_copy_mode,
+                                        i,
+                                        tf!("{} ({} Kan.)", "{} ({} ch.)", m.name, m.channels.len()),
+                                    );
+                                }
+                            });
+                        if ui
+                            .button(t("Als bearbeitbare Textdatei kopieren", "Copy as editable text file"))
+                            .clicked()
+                        {
+                            if let Some(m) = ti.ft.modes.get(st.qxf_copy_mode) {
+                                let id = config::unique_fixture_id(&show.dir, &format!("{}_custom", ti.ft.id));
+                                st.fx_edit = Some(FxEdit {
+                                    id: id.clone(),
+                                    name: format!("{} ({})", ti.ft.name, m.name),
+                                    open_caps: vec![false; m.channels.len()],
+                                    channels: m.channels.clone(),
+                                    base: None,
+                                });
+                                st.fx_sel = Some(id);
+                            }
+                        }
+                    });
+                    if let Some(m) = ti.ft.modes.get(st.qxf_copy_mode) {
+                        ui.add_space(4.0);
+                        channel_overview(ui, &m.channels);
+                    }
+                });
                 return;
             }
         }
-        ui.label("Wähle oben ein Fixture aus oder lege ein neues an.");
+        ui.label(t(
+            "Wähle oben ein Fixture aus oder lege ein neues an.",
+            "Choose a fixture above or create a new one.",
+        ));
         return;
     }
 
-    let bpm = st.bpm;
     let Some(fx) = st.fx_edit.as_mut() else { return };
     let dirty = fx.dirty();
     let mut save = false;
     let mut discard = false;
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Name:");
-        ui.add(egui::TextEdit::singleline(&mut fx.name).desired_width(260.0));
-        ui.label(RichText::new(format!("Datei: fixtures/{}.txt", fx.id)).weak());
+
+    section(ui, t("Fixture bearbeiten", "Edit fixture"), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(t("Name:", "Name:"));
+            ui.add(egui::TextEdit::singleline(&mut fx.name).desired_width(260.0));
+            ui.label(RichText::new(tf!("Datei: fixtures/{}.txt", "File: fixtures/{}.txt", fx.id)).weak());
+        });
+        ui.horizontal_wrapped(|ui| {
+            save = ui.add_enabled(dirty, egui::Button::new(t("Speichern", "Save"))).clicked();
+            discard = ui
+                .add_enabled(dirty && fx.base.is_some(), egui::Button::new(t("Verwerfen", "Discard")))
+                .clicked();
+            if dirty {
+                ui.colored_label(YELLOW, t("ungespeicherte Änderungen", "unsaved changes"));
+            }
+            ui.separator();
+            let all_open = !fx.open_caps.is_empty() && fx.open_caps.iter().all(|o| *o);
+            if ui
+                .button(if all_open {
+                    t("Alle Bereiche zuklappen", "Collapse all ranges")
+                } else {
+                    t("Alle Bereiche aufklappen", "Expand all ranges")
+                })
+                .clicked()
+            {
+                for o in fx.open_caps.iter_mut() {
+                    *o = !all_open;
+                }
+            }
+        });
     });
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("+ Kanal").clicked() {
+    ui.add_space(6.0);
+
+    fx.open_caps.resize(fx.channels.len(), false);
+    let mut action: Option<RowAction> = None;
+    let n = fx.channels.len();
+    section(ui, t("Kanäle", "Channels"), |ui| {
+        for c in 0..n {
+            ui.push_id(("ch", c), |ui| {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let ch = &mut fx.channels[c];
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(format!("{:>3}", c + 1)).monospace().strong());
+                        egui::ComboBox::from_id_salt("kind")
+                            .selected_text(ch.kind.label())
+                            .width(150.0)
+                            .show_ui(ui, |ui| {
+                                for k in ChanKind::all() {
+                                    ui.selectable_value(&mut ch.kind, k, k.label());
+                                }
+                            });
+                        ui.add(egui::TextEdit::singleline(&mut ch.label).desired_width(170.0));
+                        ui.label(t("Ruhewert", "Rest value"));
+                        ui.add(egui::DragValue::new(&mut ch.rest).range(0..=255));
+                        let caps_btn = format!(
+                            "{} {} ({})",
+                            if fx.open_caps[c] { "⏷" } else { "⏵" },
+                            t("Bereiche", "Ranges"),
+                            ch.caps.len()
+                        );
+                        if ui.button(caps_btn).clicked() {
+                            fx.open_caps[c] = !fx.open_caps[c];
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add_enabled(n > 1, egui::Button::new(t("Entfernen", "Remove"))).clicked() {
+                                action = Some(RowAction::Remove(c));
+                            }
+                            if ui.add_enabled(c + 1 < n, egui::Button::new("⏷")).clicked() {
+                                action = Some(RowAction::Down(c));
+                            }
+                            if ui.add_enabled(c > 0, egui::Button::new("⏶")).clicked() {
+                                action = Some(RowAction::Up(c));
+                            }
+                        });
+                    });
+                    if fx.open_caps[c] {
+                        ui.separator();
+                        ui.indent("caps", |ui| caps_editor(ui, &mut fx.channels[c], bpm));
+                    }
+                });
+            });
+        }
+        if ui.button(t("+ Kanal", "+ Channel")).clicked() {
             fx.channels.push(FixtureChannel {
                 kind: ChanKind::Other,
-                label: format!("Kanal {}", fx.channels.len() + 1),
+                label: tf!("Kanal {}", "Channel {}", fx.channels.len() + 1),
                 rest: 0,
                 caps: Vec::new(),
             });
             fx.open_caps.push(false);
         }
-        save = ui.add_enabled(dirty, egui::Button::new("Speichern")).clicked();
-        discard = ui.add_enabled(dirty && fx.base.is_some(), egui::Button::new("Verwerfen")).clicked();
-        if dirty {
-            ui.colored_label(YELLOW, "ungespeicherte Änderungen");
-        }
     });
 
-    fx.open_caps.resize(fx.channels.len(), false);
-    let mut action: Option<RowAction> = None;
-    let n = fx.channels.len();
-    for c in 0..n {
-        ui.push_id(("ch", c), |ui| {
-            let ch = &mut fx.channels[c];
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(format!("{:>3}", c + 1)).monospace().strong());
-                egui::ComboBox::from_id_salt("kind")
-                    .selected_text(ch.kind.label())
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for k in ChanKind::all() {
-                            ui.selectable_value(&mut ch.kind, k, k.label());
-                        }
-                    });
-                ui.add(egui::TextEdit::singleline(&mut ch.label).desired_width(170.0));
-                ui.label("Ruhewert");
-                ui.add(egui::DragValue::new(&mut ch.rest).range(0..=255));
-                let caps_btn = format!(
-                    "{} Bereiche ({})",
-                    if fx.open_caps[c] { "⏷" } else { "⏵" },
-                    ch.caps.len()
-                );
-                if ui.button(caps_btn).clicked() {
-                    fx.open_caps[c] = !fx.open_caps[c];
-                }
-                if ui.add_enabled(c > 0, egui::Button::new("⏶")).clicked() {
-                    action = Some(RowAction::Up(c));
-                }
-                if ui.add_enabled(c + 1 < n, egui::Button::new("⏷")).clicked() {
-                    action = Some(RowAction::Down(c));
-                }
-                if ui.add_enabled(n > 1, egui::Button::new("Entfernen")).clicked() {
-                    action = Some(RowAction::Remove(c));
-                }
-            });
-            if fx.open_caps[c] {
-                ui.indent("caps", |ui| caps_editor(ui, &mut fx.channels[c], bpm));
-            }
-        });
-    }
     match action {
         Some(RowAction::Up(i)) => {
             fx.channels.swap(i, i - 1);
@@ -1031,10 +1300,10 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
     }
 
     if discard {
-        if let Some((n, c)) = fx.base.clone() {
-            fx.name = n;
-            fx.open_caps = vec![false; c.len()];
-            fx.channels = c;
+        if let Some((name, channels)) = fx.base.clone() {
+            fx.name = name;
+            fx.open_caps = vec![false; channels.len()];
+            fx.channels = channels;
         }
     }
     if save {
@@ -1043,7 +1312,7 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
             fx.base = Some((fx.name.clone(), fx.channels.clone()));
         }
         let id = fx.id.clone();
-        report(st, shared, r.map(|_| format!("fixtures/{id}.txt gespeichert")));
+        report(st, shared, r.map(|_| tf!("fixtures/{id}.txt gespeichert", "fixtures/{id}.txt saved")));
     }
 }
 
@@ -1070,7 +1339,17 @@ fn channel_overview(ui: &mut egui::Ui, channels: &[FixtureChannel]) {
     });
 }
 
-const EFFECTS: [&str; 7] = ["Aus", "Offen", "Zu", "Strobe", "Zufalls-Strobe", "Farbe", "Text"];
+fn effect_names() -> [&'static str; 7] {
+    [
+        t("Aus", "Off"),
+        t("Offen", "Open"),
+        t("Zu", "Closed"),
+        "Strobe",
+        t("Zufalls-Strobe", "Random strobe"),
+        t("Farbe", "Colour"),
+        "Text",
+    ]
+}
 
 fn effect_index(e: &Effect) -> usize {
     match e {
@@ -1101,25 +1380,30 @@ fn effect_from_index(i: usize, old: &Effect) -> Effect {
 }
 
 fn caps_editor(ui: &mut egui::Ui, ch: &mut FixtureChannel, bpm: bool) {
+    let names = effect_names();
     let mut remove: Option<usize> = None;
-    for (k, cap) in ch.caps.iter_mut().enumerate() {
-        ui.push_id(("cap", k), |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.add(egui::DragValue::new(&mut cap.min).range(0..=255));
-                ui.label("–");
-                ui.add(egui::DragValue::new(&mut cap.max).range(0..=255));
-                let mut idx = effect_index(&cap.effect);
-                egui::ComboBox::from_id_salt("eff")
-                    .selected_text(EFFECTS[idx])
-                    .show_ui(ui, |ui| {
-                        for (i, name) in EFFECTS.iter().enumerate() {
-                            ui.selectable_value(&mut idx, i, *name);
-                        }
-                    });
-                if idx != effect_index(&cap.effect) {
-                    cap.effect = effect_from_index(idx, &cap.effect);
-                }
-                match &mut cap.effect {
+    egui::Grid::new("capsgrid").striped(true).show(ui, |ui| {
+        for (k, cap) in ch.caps.iter_mut().enumerate() {
+            ui.push_id(("cap", k), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut cap.min).range(0..=255));
+                    ui.label("–");
+                    ui.add(egui::DragValue::new(&mut cap.max).range(0..=255));
+                });
+            });
+            let mut idx = effect_index(&cap.effect);
+            egui::ComboBox::from_id_salt(("eff", k))
+                .selected_text(names[idx])
+                .show_ui(ui, |ui| {
+                    for (i, name) in names.iter().enumerate() {
+                        ui.selectable_value(&mut idx, i, *name);
+                    }
+                });
+            if idx != effect_index(&cap.effect) {
+                cap.effect = effect_from_index(idx, &cap.effect);
+            }
+            ui.push_id(("par", k), |ui| {
+                ui.horizontal(|ui| match &mut cap.effect {
                     Effect::Strobe { from, to, .. } => {
                         freq_drag(ui, from, bpm);
                         ui.label("→");
@@ -1128,7 +1412,7 @@ fn caps_editor(ui: &mut egui::Ui, ch: &mut FixtureChannel, bpm: bool) {
                     Effect::Color(a, b) => {
                         ui.color_edit_button_srgb(a);
                         let mut two = b.is_some();
-                        if ui.checkbox(&mut two, "2. Farbe").changed() {
+                        if ui.checkbox(&mut two, t("2. Farbe", "2nd colour")).changed() {
                             *b = if two { Some([0, 0, 255]) } else { None };
                         }
                         if let Some(bb) = b {
@@ -1136,18 +1420,23 @@ fn caps_editor(ui: &mut egui::Ui, ch: &mut FixtureChannel, bpm: bool) {
                         }
                     }
                     _ => {}
-                }
-                ui.add(egui::TextEdit::singleline(&mut cap.label).hint_text("Bezeichnung").desired_width(170.0));
-                if ui.button("Entfernen").clicked() {
-                    remove = Some(k);
-                }
+                });
             });
-        });
-    }
+            ui.add(
+                egui::TextEdit::singleline(&mut cap.label)
+                    .hint_text(t("Bezeichnung", "Label"))
+                    .desired_width(170.0),
+            );
+            if ui.button(t("Entfernen", "Remove")).clicked() {
+                remove = Some(k);
+            }
+            ui.end_row();
+        }
+    });
     if let Some(k) = remove {
         ch.caps.remove(k);
     }
-    if ui.button("+ Bereich").clicked() {
+    if ui.button(t("+ Bereich", "+ Range")).clicked() {
         let start = ch.caps.iter().map(|c| c.max as u16 + 1).max().unwrap_or(0).min(255) as u8;
         ch.caps.push(Capability {
             min: start,
@@ -1157,31 +1446,37 @@ fn caps_editor(ui: &mut egui::Ui, ch: &mut FixtureChannel, bpm: bool) {
         });
     }
     if ch.caps.iter().any(|c| c.min > c.max) {
-        ui.colored_label(RED, "„von“ ist größer als „bis“");
+        ui.colored_label(RED, t("„von“ ist größer als „bis“", "“from” is greater than “to”"));
     }
 }
 
 // ---------------------------------------------------------------------------
-// QLC+ Bibliothek
+// QLC+ library
 // ---------------------------------------------------------------------------
 
 fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) {
     let lib = match library::get() {
         Ok(l) => l,
         Err(e) => {
-            ui.colored_label(RED, format!("Bibliothek konnte nicht geladen werden: {e}"));
+            ui.colored_label(
+                RED,
+                tf!("Bibliothek konnte nicht geladen werden: {e}", "Library could not be loaded: {e}"),
+            );
             return;
         }
     };
 
     ui.horizontal_wrapped(|ui| {
-        ui.label("Suche:");
+        ui.label(t("Suche:", "Search:"));
         ui.add(
             egui::TextEdit::singleline(&mut st.lib_query)
-                .hint_text("Hersteller, Modell oder Typ – z. B. „eurolite par“")
+                .hint_text(t(
+                    "Hersteller, Modell oder Typ – z. B. „eurolite par“",
+                    "manufacturer, model or type – e.g. “eurolite par”",
+                ))
                 .desired_width(320.0),
         );
-        if !st.lib_query.is_empty() && ui.button("Leeren").clicked() {
+        if !st.lib_query.is_empty() && ui.button(t("Leeren", "Clear")).clicked() {
             st.lib_query.clear();
         }
     });
@@ -1202,9 +1497,18 @@ fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState
     };
     ui.label(
         RichText::new(if searching {
-            format!("{total} Treffer bei {} Herstellern", st.lib_hits.len())
+            tf!(
+                "{total} Treffer bei {} Herstellern",
+                "{total} results from {} manufacturers",
+                st.lib_hits.len()
+            )
         } else {
-            format!("{} Hersteller · {} Fixtures", lib.groups.len(), lib.entries.len())
+            tf!(
+                "{} Hersteller · {} Fixtures",
+                "{} manufacturers · {} fixtures",
+                lib.groups.len(),
+                lib.entries.len()
+            )
         })
         .weak(),
     );
@@ -1213,7 +1517,7 @@ fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState
     let height = ui.available_height();
     let mut clicked: Option<usize> = None;
     ui.columns(2, |cols| {
-        // ---- links: Hersteller-Ordner ----
+        // ---- left: manufacturer folders ----
         egui::ScrollArea::vertical()
             .id_salt("lib-tree")
             .max_height(height)
@@ -1226,7 +1530,7 @@ fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState
                     lib.groups.iter().enumerate().map(|(g, (_, h))| (g, h.as_slice())).collect()
                 };
                 if searching && groups.is_empty() {
-                    ui.label("Nichts gefunden.");
+                    ui.label(t("Nichts gefunden.", "Nothing found."));
                 }
                 for (gi, hits) in groups {
                     let name = &lib.groups[gi].0;
@@ -1250,7 +1554,7 @@ fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState
                 }
             });
 
-        // ---- rechts: Details + Patchen ----
+        // ---- right: details + patching ----
         egui::ScrollArea::vertical()
             .id_salt("lib-detail")
             .max_height(height)
@@ -1271,7 +1575,10 @@ fn library_detail(
     st: &mut UiState,
 ) {
     let Some(i) = st.lib_sel else {
-        ui.label("Links einen Hersteller aufklappen und ein Fixture wählen.");
+        ui.label(t(
+            "Links einen Hersteller aufklappen und ein Fixture wählen.",
+            "Expand a manufacturer on the left and pick a fixture.",
+        ));
         attribution(ui);
         return;
     };
@@ -1287,19 +1594,22 @@ fn library_detail(
     let ft = match &st.lib_parsed {
         Some((_, Ok(ft))) => ft.clone(),
         Some((_, Err(err))) => {
-            ui.colored_label(RED, format!("Fixture nicht lesbar: {err}"));
+            ui.colored_label(RED, tf!("Fixture nicht lesbar: {err}", "Fixture not readable: {err}"));
             return;
         }
         None => return,
     };
 
     ui.label(RichText::new(format!("{} {}", e.manufacturer.replace('_', " "), e.model)).heading());
-    ui.label(RichText::new(format!("{} · {} Modi", e.kind, ft.modes.len())).weak());
+    ui.label(RichText::new(tf!("{} · {} Modi", "{} · {} modes", e.kind, ft.modes.len())).weak());
     ui.add_space(4.0);
-    ui.label("Modus:");
+    ui.label(t("Modus:", "Mode:"));
     for (mi, m) in ft.modes.iter().enumerate() {
         if ui
-            .selectable_label(st.lib_mode == mi, format!("{} ({} Kanäle)", m.name, m.channels.len()))
+            .selectable_label(
+                st.lib_mode == mi,
+                tf!("{} ({} Kanäle)", "{} ({} channels)", m.name, m.channels.len()),
+            )
             .clicked()
         {
             st.lib_mode = mi;
@@ -1312,46 +1622,54 @@ fn library_detail(
         st.lib_address = show.next_free_address(&st.patch, st.lib_universe, len).unwrap_or(1);
     }
 
-    egui::CollapsingHeader::new(format!("Kanäle im Modus „{}“", mode.name))
+    egui::CollapsingHeader::new(tf!("Kanäle im Modus „{}“", "Channels in mode “{}”", mode.name))
         .default_open(false)
         .show(ui, |ui| channel_overview(ui, &mode.channels));
 
     ui.add_space(4.0);
     egui::Grid::new("libpatch").num_columns(2).show(ui, |ui| {
-        ui.label("Name im Patch");
+        ui.label(t("Name im Patch", "Name in patch"));
         ui.add(egui::TextEdit::singleline(&mut st.lib_name).desired_width(220.0));
         ui.end_row();
-        ui.label("Universum");
-        if ui.add(egui::DragValue::new(&mut st.lib_universe).range(0..=config::MAX_UNIVERSE)).changed() {
+        ui.label(t("Universum", "Universe"));
+        if ui
+            .add(egui::DragValue::new(&mut st.lib_universe).range(0..=config::MAX_UNIVERSE))
+            .changed()
+        {
             st.lib_address = 0;
         }
         ui.end_row();
-        ui.label("Startadresse");
+        ui.label(t("Startadresse", "Start address"));
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut st.lib_address).range(1..=512));
-            if ui.button("nächste freie").clicked() {
+            if ui.button(t("nächste freie", "next free")).clicked() {
                 st.lib_address = show.next_free_address(&st.patch, st.lib_universe, len).unwrap_or(1);
             }
         });
         ui.end_row();
-        ui.label("Anzahl");
+        ui.label(t("Anzahl", "Count"));
         ui.add(egui::DragValue::new(&mut st.lib_count).range(1..=512));
         ui.end_row();
     });
 
     let install = |st: &mut UiState| -> Result<String, String> {
-        config::install_qxf(&show.dir, &library::slug(&e.manufacturer, &e.model), &lib.text(e))
-            .map_err(|err| {
+        config::install_qxf(&show.dir, &library::slug(&e.manufacturer, &e.model), &lib.text(e)).map_err(
+            |err| {
                 st.info = Some((false, err.clone()));
                 err
-            })
+            },
+        )
     };
 
     ui.add_space(4.0);
-    if ui.button("Hinzufügen und patchen").clicked() {
+    if ui.button(t("Hinzufügen und patchen", "Add and patch")).clicked() {
         if let Ok(id) = install(st) {
             st.patch.push(PatchEntry {
-                name: if st.lib_name.trim().is_empty() { e.model.clone() } else { st.lib_name.trim().to_string() },
+                name: if st.lib_name.trim().is_empty() {
+                    e.model.clone()
+                } else {
+                    st.lib_name.trim().to_string()
+                },
                 fixture: id.clone(),
                 universe: st.lib_universe,
                 address: st.lib_address.max(1),
@@ -1368,13 +1686,22 @@ fn library_detail(
             report(
                 st,
                 shared,
-                r.map(|_| format!("„{}“ ab Adresse {addr} gepatcht (fixtures/{id}.qxf)", e.model)),
+                r.map(|_| {
+                    tf!(
+                        "„{}“ ab Adresse {addr} gepatcht (fixtures/{id}.qxf)",
+                        "“{}” patched from address {addr} (fixtures/{id}.qxf)",
+                        e.model
+                    )
+                }),
             );
         }
     }
-    if ui.button("Nur zu den Fixtures hinzufügen").clicked() {
+    if ui
+        .button(t("Nur zu den Fixtures hinzufügen", "Only add to fixtures"))
+        .clicked()
+    {
         if let Ok(id) = install(st) {
-            report(st, shared, Ok(format!("fixtures/{id}.qxf angelegt")));
+            report(st, shared, Ok(tf!("fixtures/{id}.qxf angelegt", "fixtures/{id}.qxf created")));
         }
     }
     info_line(ui, st);
@@ -1384,8 +1711,9 @@ fn library_detail(
 fn attribution(ui: &mut egui::Ui) {
     ui.add_space(8.0);
     ui.label(
-        RichText::new(format!(
+        RichText::new(tf!(
             "Fixture-Daten: QLC+ (qlcplus.org), Apache License 2.0 · {}",
+            "Fixture data: QLC+ (qlcplus.org), Apache License 2.0 · {}",
             library::VERSION.lines().next().unwrap_or("")
         ))
         .weak()
@@ -1394,45 +1722,325 @@ fn attribution(ui: &mut egui::Ui) {
 }
 
 // ---------------------------------------------------------------------------
-// Einstellungen
+// Settings
 // ---------------------------------------------------------------------------
 
 fn st_ip(text: &str) -> Option<std::net::Ipv4Addr> {
     text.trim().parse().ok()
 }
 
-/// Erklärt, welche IP wohin gehört, und bietet die Node-Suche an.
-fn network_help(ui: &mut egui::Ui, shared: &Arc<Shared>, target: Option<std::net::Ipv4Addr>, ip_text: &mut String) {
-    ui.label(
-        RichText::new(
-            "Hier gehört die IP des Art-Net-Nodes hin (z. B. deines Pknight), nicht die deines Rechners. \
-             255.255.255.255 = Broadcast: geht an alle Geräte im Netz – funktioniert meistens, \
-             Unicast an die Node-IP ist aber zuverlässiger.",
-        )
-        .small(),
-    );
-    if let Some(t) = target {
-        match artnet::local_ip_for(t) {
-            Some(own) => {
-                let same_net = t.is_broadcast() || own.octets()[..3] == t.octets()[..3];
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("Dein Rechner sendet von {own}")).small());
-                    if !same_net {
-                        ui.colored_label(
-                            YELLOW,
-                            RichText::new(format!(
-                                "– Node {t} liegt in einem anderen Netz. Der Node braucht eine IP wie {}.{}.{}.x",
-                                own.octets()[0],
-                                own.octets()[1],
-                                own.octets()[2]
-                            ))
-                            .small(),
-                        );
+fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &Arc<Shared>, st: &mut UiState) {
+    let mut ip_ok = true;
+
+    // ---- row 1: Art-Net (left) | nodes on the network (right) ----
+    if let Some(s) = st.settings.as_mut() {
+        let ip_text = &mut st.ip_text;
+        ui.columns(2, |cols| {
+            section(&mut cols[0], "Art-Net", |ui| {
+                egui::Grid::new("netgrid").num_columns(2).show(ui, |ui| {
+                    ui.label(t("IP des Nodes", "Node IP"));
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(ip_text).desired_width(130.0));
+                        if ui.button("Broadcast").clicked() {
+                            *ip_text = "255.255.255.255".into();
+                        }
+                    });
+                    ui.end_row();
+                    match st_ip(ip_text) {
+                        Some(ip) => s.artnet_ip = ip,
+                        None => {
+                            ip_ok = false;
+                            ui.label("");
+                            ui.colored_label(RED, t("ungültige IP", "invalid IP"));
+                            ui.end_row();
+                        }
                     }
+                    ui.label("Port");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut s.artnet_port).range(1..=65535));
+                        if ui
+                            .add_enabled(s.artnet_port != 6454, egui::Button::new(t("Standard", "Default")))
+                            .clicked()
+                        {
+                            s.artnet_port = 6454;
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(t("Wiederholrate", "Refresh rate"));
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut s.refresh_hz)
+                                .range(1.0..=44.0)
+                                .speed(0.5)
+                                .suffix(" Hz"),
+                        );
+                        if ui
+                            .add_enabled((s.refresh_hz - 40.0).abs() > 0.01, egui::Button::new(t("Standard", "Default")))
+                            .clicked()
+                        {
+                            s.refresh_hz = 40.0;
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("MIDI-CCs");
+                    ui.checkbox(&mut s.cc_input, t("als Werte annehmen (Fades)", "accept as values (fades)"));
+                    ui.end_row();
                 });
+                if ui.button(t("Alles auf Standard", "Reset all to default")).clicked() {
+                    *ip_text = "255.255.255.255".into();
+                    s.artnet_port = 6454;
+                    s.refresh_hz = 40.0;
+                    s.cc_input = true;
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(t(
+                        "Die IP des Art-Net-Nodes, nicht die deines Rechners. Broadcast erreicht alle Geräte, \
+                         Unicast an die Node-IP ist zuverlässiger.",
+                        "The IP of the Art-Net node, not of your computer. Broadcast reaches every device; \
+                         unicast to the node IP is more reliable.",
+                    ))
+                    .weak()
+                    .small(),
+                );
+            });
+
+            section(&mut cols[1], t("Nodes im Netz", "Nodes on the network"), |ui| {
+                nodes_panel(ui, shared, st_ip(ip_text), ip_text);
+            });
+        });
+    }
+
+    ui.add_space(6.0);
+
+    // ---- row 2: MIDI mapping, 2 × 8 channels ----
+    if let Some(s) = st.settings.as_mut() {
+        section(ui, t("MIDI-Kanal → Universum / Block", "MIDI channel → universe / block"), |ui| {
+            if ui.button(t("Standard-Zuordnung", "Default mapping")).clicked() {
+                s.midi = config::default_midi_map();
+            }
+            ui.add_space(4.0);
+            ui.columns(2, |cols| {
+                for (col, range) in [(0usize, 0..8usize), (1, 8..16)] {
+                    let ui = &mut cols[col];
+                    egui::Grid::new(("midimap", col)).striped(true).num_columns(5).show(ui, |ui| {
+                        for h in ["MIDI", t("aktiv", "on"), t("Universum", "Universe"), "Block", "DMX"] {
+                            ui.label(RichText::new(h).strong());
+                        }
+                        ui.end_row();
+                        for ch in range {
+                            ui.label(format!("{}", ch + 1));
+                            let mut on = s.midi[ch].is_some();
+                            if ui.checkbox(&mut on, "").changed() {
+                                s.midi[ch] = on.then_some(MidiTarget {
+                                    universe: (ch / 4) as u16,
+                                    block: (ch % 4) as u8,
+                                });
+                            }
+                            match s.midi[ch].as_mut() {
+                                Some(m) => {
+                                    ui.add(egui::DragValue::new(&mut m.universe).range(0..=config::MAX_UNIVERSE));
+                                    egui::ComboBox::from_id_salt(("blk", ch))
+                                        .selected_text(format!("{}", m.block + 1))
+                                        .width(40.0)
+                                        .show_ui(ui, |ui| {
+                                            for b in 0..4u8 {
+                                                ui.selectable_value(&mut m.block, b, format!("{}", b + 1));
+                                            }
+                                        });
+                                    ui.label(format!("{}–{}", m.first_slot() + 1, m.first_slot() + BLOCK_SIZE));
+                                }
+                                None => {
+                                    ui.label("");
+                                    ui.label("");
+                                    ui.label(RichText::new(t("aus", "off")).weak());
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    // ---- save / discard settings ----
+    let dirty = st.settings != st.settings_base;
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add_enabled(dirty && ip_ok, egui::Button::new(t("Einstellungen speichern", "Save settings")))
+            .clicked()
+        {
+            if let Some(s) = st.settings.clone() {
+                let r = config::write_config(&show.dir, &s)
+                    .map(|_| t("config.txt gespeichert", "config.txt saved").to_string());
+                if r.is_ok() {
+                    st.settings_base = Some(s);
+                }
+                report(st, shared, r);
+            }
+        }
+        if ui.add_enabled(dirty, egui::Button::new(t("Verwerfen", "Discard"))).clicked() {
+            let s = show.settings();
+            st.ip_text = s.artnet_ip.to_string();
+            st.settings = Some(s.clone());
+            st.settings_base = Some(s);
+        }
+        if dirty {
+            ui.colored_label(YELLOW, t("ungespeicherte Änderungen", "unsaved changes"));
+        }
+    });
+    info_line(ui, st);
+    ui.add_space(6.0);
+
+    // ---- row 3: display (left) | config folder (right) ----
+    let mut prefs = st.prefs;
+    let mut dir_action: Option<u8> = None;
+    let dir_edit = &mut st.dir_edit;
+    ui.columns(2, |cols| {
+        section(&mut cols[0], t("Darstellung", "Display"), |ui| {
+            egui::Grid::new("dispgrid").num_columns(2).show(ui, |ui| {
+                ui.label(t("Sprache", "Language"));
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut prefs.english, true, "English");
+                    ui.radio_value(&mut prefs.english, false, "Deutsch");
+                });
+                ui.end_row();
+                ui.label(t("Frequenzen", "Frequencies"));
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut prefs.bpm, false, "Hz");
+                    ui.radio_value(&mut prefs.bpm, true, "BPM");
+                });
+                ui.end_row();
+                ui.label(t("MIDI-Noten", "MIDI notes"));
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut prefs.notes, NoteFmt::Number, t("Zahl", "Number"));
+                    ui.radio_value(&mut prefs.notes, NoteFmt::Name, "Name");
+                    ui.radio_value(&mut prefs.notes, NoteFmt::Both, t("beides", "both"));
+                });
+                ui.end_row();
+                ui.label(t("Info unter Kacheln", "Info below tiles"));
+                egui::ComboBox::from_id_salt("tileinfo2")
+                    .selected_text(tile_info_label(prefs.tile))
+                    .show_ui(ui, |ui| {
+                        for ti in [TileInfo::Nothing, TileInfo::Address, TileInfo::Dimmer, TileInfo::Midi] {
+                            ui.selectable_value(&mut prefs.tile, ti, tile_info_label(ti));
+                        }
+                    });
+                ui.end_row();
+            });
+            ui.label(
+                RichText::new(t(
+                    "Größe oben rechts. Alles hier gilt für alle Projekte (ui.txt im Konfig-Ordner).",
+                    "Size: top right. Everything here applies to all projects (ui.txt in the config folder).",
+                ))
+                .weak()
+                .small(),
+            );
+        });
+
+        section(&mut cols[1], t("Konfig-Ordner", "Config folder"), |ui| {
+            ui.add(egui::TextEdit::singleline(dir_edit).desired_width(f32::INFINITY));
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(t("Übernehmen", "Apply")).clicked() {
+                    dir_action = Some(1);
+                }
+                if ui.button(t("Standard", "Default")).clicked() {
+                    dir_action = Some(2);
+                }
+                if ui.button(t("Ordner öffnen", "Open folder")).clicked() {
+                    dir_action = Some(3);
+                }
+                if ui.button(t("Neu laden", "Reload")).clicked() {
+                    dir_action = Some(4);
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(t("Alle auf Ruhewert", "All to rest value")).clicked() {
+                    dir_action = Some(5);
+                }
+                if ui
+                    .button(t("Reaper-Notennamen exportieren", "Export Reaper note names"))
+                    .clicked()
+                {
+                    dir_action = Some(6);
+                }
+            });
+        });
+    });
+
+    if prefs != st.prefs {
+        let lang_changed = prefs.english != st.prefs.english;
+        st.prefs = prefs;
+        i18n::set_english(prefs.english);
+        save_prefs(params, st);
+        if lang_changed {
+            shared.reload_request.store(true, Relaxed);
+        }
+    }
+    match dir_action {
+        Some(1) => {
+            if let Ok(mut d) = params.config_dir.write() {
+                *d = st.dir_edit.trim().to_string();
+            }
+            shared.reload_request.store(true, Relaxed);
+        }
+        Some(2) => {
+            if let Ok(mut d) = params.config_dir.write() {
+                d.clear();
+            }
+            st.dir_edit = config::default_config_dir().display().to_string();
+            shared.reload_request.store(true, Relaxed);
+        }
+        Some(3) => open_path(&artnet::effective_dir(params)),
+        Some(4) => shared.reload_request.store(true, Relaxed),
+        Some(5) => shared.reset_all_to_rest(),
+        Some(6) => {
+            let r = config::export_note_names(show).map(|p| {
+                tf!(
+                    "Notennamen gespeichert in {}",
+                    "Note names saved to {}",
+                    p.display()
+                )
+            });
+            report(st, shared, r);
+        }
+        _ => {}
+    }
+    info_line(ui, st);
+
+    ui.add_space(6.0);
+    attribution(ui);
+}
+
+/// Own IP, subnet check and ArtPoll node search
+fn nodes_panel(
+    ui: &mut egui::Ui,
+    shared: &Arc<Shared>,
+    target: Option<std::net::Ipv4Addr>,
+    ip_text: &mut String,
+) {
+    if let Some(tg) = target {
+        match artnet::local_ip_for(tg) {
+            Some(own) => {
+                ui.label(RichText::new(tf!("Dein Rechner sendet von {own}", "Your computer sends from {own}")).small());
+                let same_net = tg.is_broadcast() || own.octets()[..3] == tg.octets()[..3];
+                if !same_net {
+                    ui.colored_label(
+                        YELLOW,
+                        RichText::new(tf!(
+                            "Node {tg} liegt in einem anderen Netz – er braucht eine IP wie {}.{}.{}.x",
+                            "Node {tg} is in a different subnet – it needs an IP like {}.{}.{}.x",
+                            own.octets()[0],
+                            own.octets()[1],
+                            own.octets()[2]
+                        ))
+                        .small(),
+                    );
+                }
             }
             None => {
-                ui.colored_label(YELLOW, RichText::new("Kein Netzwerk gefunden.").small());
+                ui.colored_label(YELLOW, RichText::new(t("Kein Netzwerk gefunden.", "No network found.")).small());
             }
         }
     }
@@ -1440,7 +2048,14 @@ fn network_help(ui: &mut egui::Ui, shared: &Arc<Shared>, target: Option<std::net
     ui.horizontal_wrapped(|ui| {
         let running = shared.discovery_running.load(Relaxed);
         if ui
-            .add_enabled(!running, egui::Button::new(if running { "Suche läuft …" } else { "Nodes im Netz suchen" }))
+            .add_enabled(
+                !running,
+                egui::Button::new(if running {
+                    t("Suche läuft …", "Searching …")
+                } else {
+                    t("Nodes suchen", "Search nodes")
+                }),
+            )
             .clicked()
         {
             artnet::start_discovery(shared.clone());
@@ -1451,200 +2066,28 @@ fn network_help(ui: &mut egui::Ui, shared: &Arc<Shared>, target: Option<std::net
             }
         }
     });
+
     let nodes = shared.nodes.lock().map(|n| n.clone()).unwrap_or_default();
-    for n in nodes {
-        ui.horizontal_wrapped(|ui| {
-            let name = if n.long_name.is_empty() { n.short_name.clone() } else { n.long_name.clone() };
-            ui.label(RichText::new(format!("{}  ·  {name}", n.ip)).monospace());
-            if ui.button("übernehmen").clicked() {
-                *ip_text = n.ip.to_string();
-            }
-        });
-    }
-    ui.label(
-        RichText::new(
-            "Tippen in Eingabefelder geht nicht? Reaper gibt die Tastatur sonst nicht ans Plugin weiter: \
-             im FX-Fenster die Option „Send all keyboard input to plugin“ einschalten.",
-        )
-        .weak()
-        .small(),
-    );
-}
-
-fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &Arc<Shared>, st: &mut UiState) {
-    ui.heading("Art-Net");
-    let mut ip_ok = true;
-    if let Some(s) = st.settings.as_mut() {
-        egui::Grid::new("netgrid").num_columns(2).show(ui, |ui| {
-            ui.label("IP-Adresse des Nodes");
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut st.ip_text).desired_width(160.0));
-                match st.ip_text.trim().parse() {
-                    Ok(ip) => s.artnet_ip = ip,
-                    Err(_) => {
-                        ip_ok = false;
-                        ui.colored_label(RED, "ungültige IP");
-                    }
-                }
-                if ui.button("Broadcast").clicked() {
-                    st.ip_text = "255.255.255.255".into();
-                }
-            });
-            ui.end_row();
-            ui.label("Port");
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut s.artnet_port).range(1..=65535));
-                if ui.add_enabled(s.artnet_port != 6454, egui::Button::new("Standard (6454)")).clicked() {
-                    s.artnet_port = 6454;
-                }
-            });
-            ui.end_row();
-            ui.label("Wiederholrate");
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut s.refresh_hz).range(1.0..=44.0).speed(0.5).suffix(" Hz"));
-                if ui.add_enabled((s.refresh_hz - 40.0).abs() > 0.01, egui::Button::new("Standard (40 Hz)")).clicked() {
-                    s.refresh_hz = 40.0;
-                }
-            });
-            ui.end_row();
-            ui.label("MIDI-CCs als Werte");
-            ui.checkbox(&mut s.cc_input, "annehmen (für Fades per CC-Lane)");
-            ui.end_row();
-        });
-        if ui.button("Alle Netzwerk-Einstellungen auf Standard").clicked() {
-            st.ip_text = "255.255.255.255".into();
-            s.artnet_port = 6454;
-            s.refresh_hz = 40.0;
-            s.cc_input = true;
-        }
-        network_help(ui, shared, st_ip(&st.ip_text), &mut st.ip_text);
-
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.heading("MIDI-Kanal → Universum / Block");
-            if ui.button("Standard-Zuordnung").clicked() {
-                s.midi = config::default_midi_map();
-            }
-        });
-        egui::Grid::new("midimap").striped(true).num_columns(5).show(ui, |ui| {
-            for h in ["MIDI", "aktiv", "Universum", "Block", "DMX"] {
-                ui.label(RichText::new(h).strong());
-            }
-            ui.end_row();
-            for ch in 0..16 {
-                ui.label(format!("Kanal {}", ch + 1));
-                let mut on = s.midi[ch].is_some();
-                if ui.checkbox(&mut on, "").changed() {
-                    s.midi[ch] = on.then_some(MidiTarget {
-                        universe: (ch / 4) as u16,
-                        block: (ch % 4) as u8,
-                    });
-                }
-                match s.midi[ch].as_mut() {
-                    Some(t) => {
-                        ui.add(egui::DragValue::new(&mut t.universe).range(0..=config::MAX_UNIVERSE));
-                        egui::ComboBox::from_id_salt(("blk", ch))
-                            .selected_text(format!("{}", t.block + 1))
-                            .width(50.0)
-                            .show_ui(ui, |ui| {
-                                for b in 0..4u8 {
-                                    ui.selectable_value(&mut t.block, b, format!("{}", b + 1));
-                                }
-                            });
-                        ui.label(format!(
-                            "{}–{}",
-                            t.first_slot() + 1,
-                            t.first_slot() + BLOCK_SIZE
-                        ));
-                    }
-                    None => {
-                        ui.label("");
-                        ui.label("");
-                        ui.label(RichText::new("aus").weak());
-                    }
+    if !nodes.is_empty() {
+        egui::Grid::new("nodes").striped(true).num_columns(3).show(ui, |ui| {
+            for n in nodes {
+                let name = if n.long_name.is_empty() { n.short_name.clone() } else { n.long_name.clone() };
+                ui.label(RichText::new(n.ip.to_string()).monospace());
+                ui.label(name);
+                if ui.button(t("übernehmen", "use")).clicked() {
+                    *ip_text = n.ip.to_string();
                 }
                 ui.end_row();
             }
         });
     }
-
-    let dirty = st.settings != st.settings_base;
-    ui.horizontal_wrapped(|ui| {
-        if ui.add_enabled(dirty && ip_ok, egui::Button::new("Speichern")).clicked() {
-            if let Some(s) = st.settings.clone() {
-                let r = config::write_config(&show.dir, &s).map(|_| "config.txt gespeichert".to_string());
-                if r.is_ok() {
-                    st.settings_base = Some(s);
-                }
-                report(st, shared, r);
-            }
-        }
-        if ui.add_enabled(dirty, egui::Button::new("Verwerfen")).clicked() {
-            let s = show.settings();
-            st.ip_text = s.artnet_ip.to_string();
-            st.settings = Some(s.clone());
-            st.settings_base = Some(s);
-        }
-        if dirty {
-            ui.colored_label(YELLOW, "ungespeicherte Änderungen");
-        }
-    });
-    info_line(ui, st);
-
-    ui.add_space(10.0);
-    ui.heading("Darstellung");
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Frequenzen als");
-        let mut bpm = st.prefs.bpm;
-        let a = ui.radio_value(&mut bpm, false, "Hz").changed();
-        let b = ui.radio_value(&mut bpm, true, "BPM").changed();
-        if a || b {
-            st.prefs.bpm = bpm;
-            st.bpm = bpm;
-            let _ = config::write_ui_prefs(&artnet::effective_dir(params), &st.prefs);
-        }
-        ui.label(RichText::new("(1 Hz = 60 BPM; Dateien speichern immer Hz)").weak().small());
-    });
+    ui.add_space(4.0);
     ui.label(
-        RichText::new("Größe: oben rechts (50–200 %), zoomt die komplette Oberfläche. Gilt wie Hz/BPM für alle Projekte (oberflaeche.txt).")
-            .weak()
-            .small(),
+        RichText::new(t(
+            "Tippen geht nicht? In Reaper im FX-Fenster „Send all keyboard input to plugin“ einschalten.",
+            "Can't type? In Reaper's FX window enable “Send all keyboard input to plugin”.",
+        ))
+        .weak()
+        .small(),
     );
-
-    ui.add_space(10.0);
-    ui.heading("Konfig-Ordner");
-    ui.horizontal_wrapped(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut st.dir_edit).desired_width(420.0));
-        if ui.button("Übernehmen").clicked() {
-            if let Ok(mut d) = params.config_dir.write() {
-                *d = st.dir_edit.trim().to_string();
-            }
-            shared.reload_request.store(true, Relaxed);
-        }
-        if ui.button("Standard").clicked() {
-            if let Ok(mut d) = params.config_dir.write() {
-                d.clear();
-            }
-            st.dir_edit = config::default_config_dir().display().to_string();
-            shared.reload_request.store(true, Relaxed);
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Ordner öffnen").clicked() {
-            open_path(&artnet::effective_dir(params));
-        }
-        if ui.button("Neu laden").clicked() {
-            shared.reload_request.store(true, Relaxed);
-        }
-        if ui.button("Alle auf Ruhewert").clicked() {
-            shared.reset_all_to_rest();
-        }
-        if ui.button("Reaper-Notennamen exportieren").clicked() {
-            let r = config::export_note_names(show).map(|p| format!("Notennamen gespeichert in {}", p.display()));
-            report(st, shared, r);
-        }
-    });
-
-    ui.add_space(10.0);
-    attribution(ui);
 }

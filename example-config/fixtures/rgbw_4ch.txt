@@ -1,0 +1,7 @@
+# Generic RGBW PAR, 4 channels (no dimmer channel)
+name = RGBW PAR 4ch
+
+1 | red   | Red
+2 | green | Green
+3 | blue  | Blue
+4 | white | White

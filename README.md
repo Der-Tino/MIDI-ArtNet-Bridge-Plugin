@@ -13,7 +13,7 @@ cable, no background script.
 - Patch and fixture editor, live stage preview incl. strobe, faders per channel
 - Art-Net node discovery (ArtPoll), master/blackout as automatable parameters
 
-> **Status: alpha.** The user interface is currently in German; an English UI is planned.
+> **Status: alpha.** The user interface is available in English and German (switch top right).
 
 ## Download
 
@@ -69,7 +69,7 @@ DMX-Bridge/
 ├── config.txt          Art-Net target IP, refresh rate, MIDI channel → universe/block
 ├── patch.txt           name | fixture | universe | start address
 ├── fixtures/           one fixture type per file (.txt or QLC+ .qxf)
-├── oberflaeche.txt     UI size and Hz/BPM (global, all projects)
+├── ui.txt              UI size, language, Hz/BPM, note display (global, all projects)
 └── reaper-notennamen/  Reaper note-name files (created on request)
 ```
 

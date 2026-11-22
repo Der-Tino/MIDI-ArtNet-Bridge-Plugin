@@ -1,0 +1,38 @@
+# Example for "everything else": moving head with colour wheel, gobo, prism …
+# Template only – not patched.
+
+name = Example moving head 12ch
+
+1  | pan            | Pan        | 128
+2  | pan_fine       | Pan fine
+3  | tilt           | Tilt       | 128
+4  | tilt_fine      | Tilt fine
+5  | pt_speed       | Movement speed
+6  | colorwheel     | Colour wheel
+   0-9     | color white         | White
+   10-19   | color red           | Red
+   20-29   | color #ff8000       | Orange
+   30-39   | color green         | Green
+   40-49   | color red green     | Red/green (split)
+   50-127  | color blue          | Blue
+   128-255 | Colour wheel rotation
+7  | gobo           | Gobo
+   0-7     | off                 | open
+   8-15    | Gobo 1
+   16-23   | Gobo 2
+   24-255  | Gobo shake
+8  | gobo_rotation  | Gobo rotation
+9  | prism          | Prism
+   0-127   | off                 | no prism
+   128-255 | 3-facet prism
+10 | strobe         | Shutter
+   0-7     | closed              | shutter closed
+   8-15    | open                | shutter open
+   16-131  | strobe 1-20         | strobe
+   132-139 | open                | open
+   140-181 | random 1-20         | random strobe
+   182-255 | open
+11 | dimmer         | Dimmer
+12 | maintenance    | Reset
+   0-199   | off
+   200-255 | Reset (hold 3 s)

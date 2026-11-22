@@ -1,0 +1,4 @@
+# Single dimmer channel (dimmer pack, fog machine, blinder …)
+name = Dimmer 1ch
+
+1 | dimmer | Intensity

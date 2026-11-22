@@ -230,3 +230,4 @@ it – modified or not – must do so under the same license and include the sou
 | [vst3-sys](https://github.com/RustAudio/vst3-sys) | GPLv3 | VST3 bindings used for the VST3 build |
 | `vendor/nih_plug_egui` | ISC | modified copy, see `VENDORED.md` |
 | `vendor/egui-baseview` | MIT | modified copy (UI zoom), see `VENDORED.md` |
+| [Space Grotesk](https://github.com/floriankarsten/space-grotesk) Bold | SIL OFL 1.1 | `assets/fonts/` – wordmark font, embedded |

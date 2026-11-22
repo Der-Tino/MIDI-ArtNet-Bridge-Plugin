@@ -136,6 +136,17 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
             if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
                 list.push("Hack".to_owned());
             }
+            // Space Grotesk Bold (SIL OFL 1.1) for the wordmark only
+            fonts.font_data.insert(
+                "SpaceGrotesk".to_owned(),
+                Arc::new(egui::FontData::from_static(include_bytes!(
+                    "../assets/fonts/SpaceGrotesk-Bold.ttf"
+                ))),
+            );
+            fonts.families.insert(
+                egui::FontFamily::Name(BRAND_FONT.into()),
+                vec!["SpaceGrotesk".to_owned(), "Hack".to_owned()],
+            );
             ctx.set_fonts(fonts);
         },
         move |ctx: &egui::Context, setter: &ParamSetter, st: &mut UiState| {
@@ -484,11 +495,46 @@ fn header(
     st: &mut UiState,
 ) {
     ui.horizontal_top(|ui| {
-        let _ = image(ui, "logo", LOGO_Z, 72.0)
-            .on_hover_text(concat!("MIDI ArtNet Bridge v", env!("CARGO_PKG_VERSION")));
+        brand(ui);
         ui.add_space(12.0);
         ui.vertical(|ui| header_rows(ui, params, shared, setter, show, st));
     });
+}
+
+const BRAND_FONT: &str = "brand";
+const BRAND_TEXT: Color32 = Color32::from_rgb(0xF1, 0xF4, 0xF7);
+
+/// Wordmark: logo + "MIDI ArtNet / Bridge vX.Y.Z" as text, without padding
+fn brand(ui: &mut egui::Ui) {
+    let r = ui
+        .horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let _ = image(ui, "logo", LOGO_Z, 50.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+                let font = egui::FontId::new(22.0, egui::FontFamily::Name(BRAND_FONT.into()));
+                ui.add(
+                    egui::Label::new(RichText::new("MIDI ArtNet").font(font.clone()).color(BRAND_TEXT))
+                        .extend(),
+                );
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Max), |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new("Bridge").font(font).color(BRAND_TEXT))
+                            .extend(),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                                .monospace()
+                                .weak(),
+                        )
+                        .extend(),
+                    );
+                });
+            });
+        })
+        .response;
+    let _ = r.on_hover_text(concat!("MIDI ArtNet Bridge v", env!("CARGO_PKG_VERSION")));
 }
 
 fn header_rows(
@@ -500,9 +546,6 @@ fn header_rows(
     st: &mut UiState,
 ) {
     ui.horizontal(|ui| {
-        ui.heading("DMX Bridge");
-        ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak());
-        ui.add_space(16.0);
         ui.label("Master");
         ui.add(ParamSlider::for_param(&params.master, setter));
         toggle(ui, setter, &params.blackout, "Blackout");

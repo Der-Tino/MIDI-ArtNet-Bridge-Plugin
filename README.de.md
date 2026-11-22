@@ -246,4 +246,4 @@ es unter derselben Lizenz und mit Quellcode tun. Ohne jede Gewährleistung.
 
 Eingebundene Fremdkomponenten behalten ihre eigenen, GPL-kompatiblen Lizenzen:
 QLC+-Fixtures (Apache 2.0), NIH-plug (ISC), vst3-sys (GPLv3),
-`vendor/nih_plug_egui` (ISC), `vendor/egui-baseview` (MIT).
+`vendor/nih_plug_egui` (ISC), `vendor/egui-baseview` (MIT), Schrift Space Grotesk Bold (SIL OFL 1.1, `assets/fonts/`).

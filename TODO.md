@@ -1,18 +1,19 @@
 # TODO / Roadmap
 
-## Window size
+## Done
 
-- [ ] **Resize grip (FabFilter style)** in the bottom-right corner of the plugin: drag to make
-      the window wider/flatter while the zoom level (size preset) stays the same; all pages
-      scroll to the bottom. Store the dragged size in `oberflaeche.txt` and restore it on open.
-      Plus a "default size" button.
-- [ ] **Screen edge / host-driven resize** (later, optional): let the user resize the plugin
-      by dragging the Reaper FX window edge, so the plugin never extends past the bottom of the
-      screen. Needs host→plugin GUI resizing, which NIH-plug does not implement yet
-      (`ext_gui_can_resize` / `ext_gui_set_size` are TODO in the CLAP wrapper) – would mean
-      patching nih-plug itself.
+- [x] **Resize grip (FabFilter style)** in the bottom-right corner: drag to resize, the zoom
+      level stays; double-click or *Settings → Display → Default size* to reset. The window
+      size is stored in `ui.txt` (in layout points, so it keeps its shape at every zoom level).
+- [x] **Host-driven resize**: drag the edge of Reaper's FX window – the plugin follows, so it
+      never has to extend past the bottom of the screen. Implemented in the vendored copy of
+      NIH-plug (CLAP: `gui.can_resize/get_resize_hints/adjust_size/set_size`,
+      VST3: `canResize/onSize/checkSizeConstraint`), see `vendor/nih_plug/VENDORED.md`.
+- [x] **Language from the system locale** on first start (German systems → German,
+      everything else → English); switchable at any time.
 
-## Ideas
+## Ideas / to discuss
 
-- [ ] Timeline-friendly fades (pitch-bend-like curves for fades) – revisit
-- [ ] RDM is out of scope for now
+- [ ] Easier fades in the timeline (originally: “pitch-shift-like” fades). Today: CC lanes
+      and poly aftertouch. Possible: a fade/release time per channel in the fixture file.
+- [ ] RDM – out of scope for now

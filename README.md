@@ -13,7 +13,7 @@ cable, no background script.
 - Patch and fixture editor, live stage preview incl. strobe, faders per channel
 - Art-Net node discovery (ArtPoll), master/blackout as automatable parameters
 
-> **Status: alpha.** The user interface is available in English and German (switch top right).
+> **Status: alpha.** The user interface is available in English and German (defaults to your system language, switch top right).
 
 ## Download
 
@@ -156,6 +156,14 @@ default = channel count).
 5. *Einstellungen → Reaper-Notennamen exportieren* writes note-name files; load them in
    the MIDI editor (*File → Note names → Load note names from file*) to see
    “Washer: Red” instead of “C#-1”.
+
+## Window size and zoom
+
+- **Zoom** (50–200 %) top right – the whole interface scales, proportions stay the same.
+- **Window size**: drag the grip in the bottom-right corner, or simply drag the edge of
+  Reaper's FX window. Double-click the grip for the default size.
+- Zoom, window size, language, Hz/BPM and note display are stored in `ui.txt` and apply to
+  all projects.
 
 ## Fades
 

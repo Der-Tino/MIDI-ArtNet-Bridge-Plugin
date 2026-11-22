@@ -76,6 +76,16 @@ pub struct EguiState {
     /// Whether the editor's window is currently open.
     #[serde(skip)]
     open: AtomicBool,
+
+    /// Size the host resized the window to, not yet applied to the egui window.
+    #[serde(skip)]
+    host_size: AtomicCell<Option<(u32, u32)>>,
+
+    /// Whether the host may resize the window, and the minimum size for that.
+    #[serde(skip)]
+    resizable: AtomicBool,
+    #[serde(skip)]
+    min_size: AtomicCell<(u32, u32)>,
 }
 
 impl<'a> PersistentField<'a, EguiState> for Arc<EguiState> {
@@ -99,6 +109,9 @@ impl EguiState {
             size: AtomicCell::new((width, height)),
             requested_size: Default::default(),
             open: AtomicBool::new(false),
+            host_size: Default::default(),
+            resizable: AtomicBool::new(false),
+            min_size: AtomicCell::new((1, 1)),
         })
     }
 
@@ -114,6 +127,30 @@ impl EguiState {
     }
 
     /// Set the new size that will be used to resize the window if the host allows.
+    /// Allow the host to resize the window (e.g. by dragging the plugin window's edge).
+    pub fn set_host_resizable(&self, resizable: bool, min_size: (u32, u32)) {
+        self.resizable.store(resizable, Ordering::Relaxed);
+        self.min_size.store(min_size);
+    }
+
+    pub fn host_resizable(&self) -> bool {
+        self.resizable.load(Ordering::Relaxed)
+    }
+
+    pub fn min_size(&self) -> (u32, u32) {
+        self.min_size.load()
+    }
+
+    /// Called from the editor when the host resized the window.
+    pub(crate) fn host_resized(&self, size: (u32, u32)) {
+        self.size.store(size);
+        self.host_size.store(Some(size));
+    }
+
+    pub(crate) fn take_host_size(&self) -> Option<(u32, u32)> {
+        self.host_size.swap(None)
+    }
+
     /// Gespeicherte Fenstergröße setzen (gilt beim nächsten Öffnen).
     pub fn set_size(&self, new_size: (u32, u32)) {
         self.size.store(new_size);

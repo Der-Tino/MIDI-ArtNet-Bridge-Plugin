@@ -54,7 +54,7 @@ impl Default for BridgeParams {
     fn default() -> Self {
         Self {
             editor_state: {
-                let (w, h) = editor::window_size_for(1.0);
+                let (w, h) = editor::window_size(1.0, config::DEFAULT_WINDOW);
                 EguiState::from_size(w, h)
             },
             config_dir: RwLock::new(String::new()),
@@ -111,7 +111,8 @@ impl Plugin for DmxBridge {
         nih_plug_egui::set_ui_zoom(editor::zoom_for(prefs.scale));
         self.params
             .editor_state
-            .set_size(editor::window_size_for(prefs.scale));
+            .set_size(editor::window_size(prefs.scale, prefs.window));
+        editor::allow_host_resize(&self.params, prefs.scale);
         editor::create(self.params.clone(), self.shared.clone())
     }
 

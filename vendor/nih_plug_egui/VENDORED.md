@@ -12,3 +12,5 @@ Lizenz: ISC (siehe LICENSE).
 - Fenstergrößenänderung übergibt keine logischen Werte mehr als physische Pixel.
 - `EguiState::set_size` öffentlich; `set_ui_zoom`/`ui_zoom` werden re-exportiert.
 - Größenänderung: angeforderte Größe bleibt gesetzt, bis der Host sie über size() abgefragt hat.
+- Größenänderung durch den Host: `set_host_resizable()`, `Editor::can_resize/min_size/set_size`.
+- `nih_plug` wird aus `../nih_plug` (eingebundene Kopie) genutzt.

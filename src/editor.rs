@@ -22,9 +22,6 @@ use crate::shared::{self, Shared, MAX_BUFS};
 use crate::tf;
 use crate::BridgeParams;
 
-/// Layout area in points – identical at every size, only the zoom changes
-pub const BASE_W: f32 = 880.0;
-pub const BASE_H: f32 = 600.0;
 /// egui is small by default – "100 %" corresponds to zoom 1.25
 pub const ZOOM_BASE: f32 = 1.25;
 
@@ -33,10 +30,17 @@ pub fn zoom_for(scale: f32) -> f32 {
     scale * ZOOM_BASE
 }
 
-/// Window size (logical pixels) for a size preset
-pub fn window_size_for(scale: f32) -> (u32, u32) {
+/// Window size (logical pixels) for a size preset and a layout size in points
+pub fn window_size(scale: f32, points: (f32, f32)) -> (u32, u32) {
     let z = zoom_for(scale);
-    ((BASE_W * z).round() as u32, (BASE_H * z).round() as u32)
+    ((points.0 * z).round() as u32, (points.1 * z).round() as u32)
+}
+
+/// Let the host resize the window too (Reaper: drag the FX window's edge)
+pub fn allow_host_resize(params: &BridgeParams, scale: f32) {
+    params
+        .editor_state
+        .set_host_resizable(true, window_size(scale, config::MIN_WINDOW));
 }
 
 const RED: Color32 = Color32::from_rgb(235, 90, 80);
@@ -90,6 +94,10 @@ struct UiState {
     prefs: UiPrefs,
     /// prefs changed somewhere without access to params → save after the frame
     prefs_dirty: bool,
+    /// window size (points) currently being dragged with the grip
+    dragging: Option<(f32, f32)>,
+    /// time when the window size last changed (saved once it is stable)
+    size_changed_at: Option<f64>,
     /// strobe calculator: (device, channel) → wanted frequency in Hz
     strobe_target: std::collections::HashMap<(usize, usize), f32>,
 
@@ -137,7 +145,7 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
             if !st.initialized {
                 st.prefs = config::read_ui_prefs(&artnet::effective_dir(&params));
                 i18n::set_english(st.prefs.english);
-                request_window(&params, st.prefs.scale);
+                request_window(&params, &st.prefs);
                 st.dir_edit = artnet::effective_dir(&params).display().to_string();
                 st.rate_t = now;
                 st.rate_pkts = shared.packets_sent.load(Relaxed);
@@ -185,6 +193,9 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
                         Tab::Settings => settings_tab(ui, show, &params, &shared, st),
                     });
             });
+
+            resize_grip(ctx, &params, st);
+            track_window_size(ctx, st, now);
 
             if st.prefs_dirty {
                 st.prefs_dirty = false;
@@ -337,11 +348,92 @@ fn open_path(p: &Path) {
     let _ = std::process::Command::new(cmd).arg(p).spawn();
 }
 
-fn request_window(params: &BridgeParams, scale: f32) {
+fn request_window(params: &BridgeParams, prefs: &UiPrefs) {
+    request_window_points(params, prefs.scale, prefs.window);
+}
+
+fn request_window_points(params: &BridgeParams, scale: f32, points: (f32, f32)) {
     nih_plug_egui::set_ui_zoom(zoom_for(scale));
-    let want = window_size_for(scale);
+    allow_host_resize(params, scale);
+    let want = window_size(scale, points);
     if params.editor_state.size() != want {
         params.editor_state.set_requested_size(want);
+    }
+}
+
+/// FabFilter-style grip in the bottom-right corner: drag to resize the window,
+/// the zoom (size preset) stays the same.
+fn resize_grip(ctx: &egui::Context, params: &BridgeParams, st: &mut UiState) {
+    let size = 16.0;
+    egui::Area::new(egui::Id::new("resize-grip"))
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(0.0, 0.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::drag());
+            let col = if resp.hovered() || resp.dragged() {
+                ui.visuals().strong_text_color()
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            let stroke = egui::Stroke::new(1.5, col);
+            for i in 1..=3 {
+                let o = i as f32 * 4.0;
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(rect.right() - o, rect.bottom() - 1.0),
+                        egui::pos2(rect.right() - 1.0, rect.bottom() - o),
+                    ],
+                    stroke,
+                );
+            }
+            let resp = resp
+                .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
+                .on_hover_text(t(
+                    "Ziehen, um das Fenster zu vergrößern/verkleinern (Doppelklick: Standardgröße)",
+                    "Drag to resize the window (double-click: default size)",
+                ));
+            if resp.double_clicked() {
+                st.prefs.window = config::DEFAULT_WINDOW;
+                st.prefs_dirty = true;
+                request_window(params, &st.prefs);
+                st.dragging = None;
+                return;
+            }
+            if resp.dragged() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    // pointer position in points = new layout size (plus half the grip)
+                    let w = (p.x + size / 2.0).max(config::MIN_WINDOW.0);
+                    let h = (p.y + size / 2.0).max(config::MIN_WINDOW.1);
+                    st.dragging = Some((w, h));
+                    request_window_points(params, st.prefs.scale, (w, h));
+                }
+            } else if let Some(sz) = st.dragging.take() {
+                st.prefs.window = sz;
+                st.prefs_dirty = true;
+            }
+        });
+}
+
+/// The host can resize the window as well – remember the size once it is stable.
+fn track_window_size(ctx: &egui::Context, st: &mut UiState, now: f64) {
+    if st.dragging.is_some() {
+        return;
+    }
+    let r = ctx.screen_rect().size();
+    let cur = (r.x.round(), r.y.round());
+    let differs = (cur.0 - st.prefs.window.0).abs() > 2.0 || (cur.1 - st.prefs.window.1).abs() > 2.0;
+    if !differs || cur.0 < config::MIN_WINDOW.0 - 2.0 || cur.1 < config::MIN_WINDOW.1 - 2.0 {
+        st.size_changed_at = None;
+        return;
+    }
+    match st.size_changed_at {
+        None => st.size_changed_at = Some(now),
+        Some(t0) if now - t0 > 0.8 => {
+            st.prefs.window = cur;
+            st.prefs_dirty = true;
+            st.size_changed_at = None;
+        }
+        _ => {}
     }
 }
 
@@ -414,7 +506,7 @@ fn header(
             if scale != st.prefs.scale {
                 st.prefs.scale = scale;
                 save_prefs(params, st);
-                request_window(params, scale);
+                request_window(params, &st.prefs);
             }
 
             ui.add_space(8.0);
@@ -1895,6 +1987,7 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
 
     // ---- row 3: display (left) | config folder (right) ----
     let mut prefs = st.prefs;
+    let mut window_reset = false;
     let mut dir_action: Option<u8> = None;
     let dir_edit = &mut st.dir_edit;
     ui.columns(2, |cols| {
@@ -1919,6 +2012,23 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
                     ui.radio_value(&mut prefs.notes, NoteFmt::Both, t("beides", "both"));
                 });
                 ui.end_row();
+                ui.label(t("Fenster", "Window"));
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{:.0} × {:.0}", prefs.window.0, prefs.window.1)).weak(),
+                    );
+                    if ui
+                        .add_enabled(
+                            prefs.window != config::DEFAULT_WINDOW,
+                            egui::Button::new(t("Standardgröße", "Default size")),
+                        )
+                        .clicked()
+                    {
+                        prefs.window = config::DEFAULT_WINDOW;
+                        window_reset = true;
+                    }
+                });
+                ui.end_row();
                 ui.label(t("Info unter Kacheln", "Info below tiles"));
                 egui::ComboBox::from_id_salt("tileinfo2")
                     .selected_text(tile_info_label(prefs.tile))
@@ -1931,8 +2041,10 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
             });
             ui.label(
                 RichText::new(t(
-                    "Größe oben rechts. Alles hier gilt für alle Projekte (ui.txt im Konfig-Ordner).",
-                    "Size: top right. Everything here applies to all projects (ui.txt in the config folder).",
+                    "Zoom oben rechts, Fenstergröße per Griff unten rechts oder am Reaper-Fensterrand. \
+                     Alles hier gilt für alle Projekte (ui.txt im Konfig-Ordner).",
+                    "Zoom: top right. Window size: grip in the bottom-right corner or Reaper's window edge. \
+                     Everything here applies to all projects (ui.txt in the config folder).",
                 ))
                 .weak()
                 .small(),
@@ -1976,6 +2088,9 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
         save_prefs(params, st);
         if lang_changed {
             shared.reload_request.store(true, Relaxed);
+        }
+        if window_reset {
+            request_window(params, &st.prefs);
         }
     }
     match dir_action {

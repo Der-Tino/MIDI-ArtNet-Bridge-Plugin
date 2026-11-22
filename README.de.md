@@ -185,6 +185,14 @@ jeweils als `.bak`). Handbearbeitung bleibt möglich.
 - **Master/Blackout:** Hat ein Gerät einen Dimmer, wird nur der Dimmer heruntergezogen,
   damit die Farben sauber bleiben. Ohne Dimmer werden die Farbkanäle skaliert.
 
+## Fenstergröße und Zoom
+
+- **Zoom** (50–200 %) oben rechts – die ganze Oberfläche skaliert, Proportionen bleiben gleich.
+- **Fenstergröße**: am Griff unten rechts ziehen oder einfach am Rand des Reaper-FX-Fensters.
+  Doppelklick auf den Griff = Standardgröße.
+- Zoom, Fenstergröße, Sprache (Standard: Systemsprache), Hz/BPM und Notenanzeige stehen in
+  `ui.txt` und gelten für alle Projekte.
+
 ## Fades
 
 - **CC-Lane** (empfohlen): Im MIDI-Editor eine CC-Lane mit derselben Nummer wie

@@ -128,6 +128,15 @@ where
                     }
                 }
 
+                // The host resized the window (dragging the plugin window's edge):
+                // only adjust our own window, don't ask the host again.
+                if let Some(size) = egui_state.take_host_size() {
+                    egui_ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
+                        size.0 as f32,
+                        size.1 as f32,
+                    )));
+                }
+
                 // For now, just always redraw. Most plugin GUIs have meters, and those almost always
                 // need a redraw. Later we can try to be a bit more sophisticated about this. Without
                 // this we would also have a blank GUI when it gets first opened because most DAWs open
@@ -154,6 +163,23 @@ where
         } else {
             self.egui_state.size()
         }
+    }
+
+    fn can_resize(&self) -> bool {
+        self.egui_state.host_resizable()
+    }
+
+    fn min_size(&self) -> (u32, u32) {
+        self.egui_state.min_size()
+    }
+
+    fn set_size(&self, width: u32, height: u32) -> bool {
+        if !self.egui_state.host_resizable() {
+            return false;
+        }
+        let (min_w, min_h) = self.egui_state.min_size();
+        self.egui_state.host_resized((width.max(min_w), height.max(min_h)));
+        true
     }
 
     fn set_scale_factor(&self, factor: f32) -> bool {

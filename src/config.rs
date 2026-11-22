@@ -1569,6 +1569,10 @@ pub enum TileInfo {
     Midi,
 }
 
+/// Window size in layout points (independent of the zoom level)
+pub const DEFAULT_WINDOW: (f32, f32) = (880.0, 600.0);
+pub const MIN_WINDOW: (f32, f32) = (640.0, 400.0);
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UiPrefs {
     pub scale: f32,
@@ -1576,6 +1580,8 @@ pub struct UiPrefs {
     pub english: bool,
     pub notes: NoteFmt,
     pub tile: TileInfo,
+    /// window size in layout points
+    pub window: (f32, f32),
 }
 
 impl Default for UiPrefs {
@@ -1583,9 +1589,10 @@ impl Default for UiPrefs {
         Self {
             scale: 1.0,
             bpm: false,
-            english: true,
+            english: !crate::i18n::system_prefers_german(),
             notes: NoteFmt::Both,
             tile: TileInfo::Nothing,
+            window: DEFAULT_WINDOW,
         }
     }
 }
@@ -1600,14 +1607,10 @@ pub fn note_text(n: u8, fmt: NoteFmt) -> String {
 }
 
 pub fn read_ui_prefs(dir: &Path) -> UiPrefs {
+    // no language chosen yet → system language (German systems → German, else English)
     let mut p = UiPrefs::default();
-    let text = read_text(&dir.join("ui.txt")).or_else(|_| {
-        // ältere Versionen: deutsch, Standardsprache war Deutsch
-        p.english = false;
-        read_text(&dir.join("oberflaeche.txt"))
-    });
+    let text = read_text(&dir.join("ui.txt")).or_else(|_| read_text(&dir.join("oberflaeche.txt")));
     let Ok(text) = text else {
-        p.english = true;
         return p;
     };
     for (_, line) in clean_lines(&text) {
@@ -1633,6 +1636,15 @@ pub fn read_ui_prefs(dir: &Path) -> UiPrefs {
                     _ => NoteFmt::Both,
                 }
             }
+            "fenster" | "window" => {
+                let nums: Vec<f32> = v
+                    .split(|c: char| c == 'x' || c == '×' || c.is_whitespace())
+                    .filter_map(|n| n.trim().parse().ok())
+                    .collect();
+                if let [w, h] = nums.as_slice() {
+                    p.window = (w.max(MIN_WINDOW.0).min(4000.0), h.max(MIN_WINDOW.1).min(3000.0));
+                }
+            }
             "kachel" | "tile" => {
                 p.tile = match v.as_str() {
                     "adresse" | "address" => TileInfo::Address,
@@ -1654,7 +1666,8 @@ pub fn write_ui_prefs(dir: &Path, p: &UiPrefs) -> Result<(), String> {
          frequency = {}\n\
          language = {}\n\
          notes = {}\n\
-         tile = {}\n",
+         tile = {}\n\
+         window = {:.0} x {:.0}\n",
         p.scale * 100.0,
         if p.bpm { "bpm" } else { "hz" },
         if p.english { "en" } else { "de" },
@@ -1669,6 +1682,8 @@ pub fn write_ui_prefs(dir: &Path, p: &UiPrefs) -> Result<(), String> {
             TileInfo::Dimmer => "dimmer",
             TileInfo::Midi => "midi",
         },
+        p.window.0,
+        p.window.1,
     );
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     fs::write(dir.join("ui.txt"), text).map_err(|e| e.to_string())

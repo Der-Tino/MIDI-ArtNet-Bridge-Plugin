@@ -1,6 +1,6 @@
 [package]
 name = "dmx_bridge"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "MIDI notes → DMX over Art-Net, as a CLAP/VST3 plugin"
 license = "GPL-3.0-or-later"
@@ -13,7 +13,8 @@ members = ["xtask"]
 crate-type = ["cdylib"]
 
 [dependencies]
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+# Kopie mit Host-Größenänderung (CLAP/VST3) – siehe vendor/nih_plug/VENDORED.md
+nih_plug = { path = "vendor/nih_plug" }
 # Kopie mit öffentlicher set_requested_size() – siehe vendor/nih_plug_egui/VENDORED.md
 nih_plug_egui = { path = "vendor/nih_plug_egui" }
 

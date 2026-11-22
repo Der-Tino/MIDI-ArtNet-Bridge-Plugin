@@ -308,7 +308,12 @@ where
         let zoom = crate::ui_zoom();
         if (zoom - self.zoom).abs() > 1e-4 {
             self.zoom = zoom;
-            self.update_ppp();
+            // direkt statt per Methode: `state` leiht self.user_state bereits aus
+            self.pixels_per_point = self.native_ppp * self.zoom;
+            self.points_per_pixel = self.pixels_per_point.recip();
+            if let Some(info) = self.egui_input.viewports.get_mut(&self.viewport_id) {
+                info.native_pixels_per_point = Some(self.pixels_per_point);
+            }
         }
 
         self.egui_input.screen_rect = Some(calculate_screen_rect(
@@ -653,17 +658,3 @@ fn calculate_screen_rect(physical_size: PhySize, points_per_pixel: f32) -> Rect 
     Rect::from_min_size(Pos2::new(0f32, 0f32), vec2(logical_size.0, logical_size.1))
 }
 
-impl<State, U> EguiWindow<State, U>
-where
-    State: 'static + Send,
-    U: FnMut(&egui::Context, &mut Queue, &mut State),
-    U: 'static + Send,
-{
-    fn update_ppp(&mut self) {
-        self.pixels_per_point = self.native_ppp * self.zoom;
-        self.points_per_pixel = self.pixels_per_point.recip();
-        if let Some(info) = self.egui_input.viewports.get_mut(&self.viewport_id) {
-            info.native_pixels_per_point = Some(self.pixels_per_point);
-        }
-    }
-}

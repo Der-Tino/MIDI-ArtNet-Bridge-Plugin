@@ -517,20 +517,29 @@ fn brand(ui: &mut egui::Ui) {
                     egui::Label::new(RichText::new("MIDI ArtNet").font(font.clone()).color(BRAND_TEXT))
                         .extend(),
                 );
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Max), |ui| {
-                    ui.add(
-                        egui::Label::new(RichText::new("Bridge").font(font).color(BRAND_TEXT))
-                            .extend(),
-                    );
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
-                                .monospace()
-                                .weak(),
-                        )
-                        .extend(),
-                    );
-                });
+                // "Bridge" + version in one text line (a nested layout would
+                // stretch over the full height of the window)
+                let mut job = egui::text::LayoutJob::default();
+                job.append(
+                    "Bridge",
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font,
+                        color: BRAND_TEXT,
+                        ..Default::default()
+                    },
+                );
+                job.append(
+                    concat!("v", env!("CARGO_PKG_VERSION")),
+                    8.0,
+                    egui::TextFormat {
+                        font_id: egui::FontId::monospace(12.0),
+                        color: ui.visuals().weak_text_color(),
+                        valign: egui::Align::BOTTOM,
+                        ..Default::default()
+                    },
+                );
+                ui.add(egui::Label::new(job).extend());
             });
         })
         .response;

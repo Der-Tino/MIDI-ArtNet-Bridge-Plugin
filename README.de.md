@@ -67,7 +67,8 @@ Den Pfad kannst du im Plugin ändern; er wird im Reaper-Projekt gespeichert.
 ```
 DMX-Bridge/
 ├── config.txt            Art-Net-IP, Rate, MIDI-Kanal → Universum/Block
-├── patch.txt             Name | Fixture | Universum | Startadresse
+├── patch.txt             Standard-Patch: Name | Fixture | Universum | Startadresse
+├── patches/              weitere benannte Patches (Tour.txt, Club.txt, …)
 ├── fixtures/
 │   ├── generic_wall_washer_rgbw.txt
 │   ├── generic_par_rgbwauv.txt
@@ -137,6 +138,19 @@ Washer Q | meine_washer    | 0 | 105 | modus=8 Channel   ← Modus einer .qxf
 Optionale Spalten: `modus=…` (oder einfach der Modusname), `anzahl=n` (oder `x12`),
 `abstand=n` (Adressabstand, Standard = Kanalanzahl).
 
+Ein Fixture der Form `lib:<hersteller_modell>` (z. B. `lib:eurolite_led_par_56`) kommt
+direkt aus der eingebauten Bibliothek – *Fixture-Bibliothek → Zum Patch hinzufügen*
+macht das für dich, Bibliotheks-Fixtures müssen also nicht nach `fixtures/` kopiert
+werden. In *Eigene Fixtures* kopieren lohnt sich nur, wenn du sie ändern willst.
+
+**Mehrere Patches:** Neben `patch.txt` kannst du benannte Patches in `patches/` anlegen
+(*Patch → Patches*: neu, speichern unter, umbenennen, löschen). Jede Plugin-Instanz merkt
+sich ihren aktiven Patch im DAW-Projekt – verschiedene Songs oder Projekte können also
+verschiedene Patches nutzen.
+
+Die `generic_*`-Vorlagen in `fixtures/` installiert und aktualisiert das Plugin selbst;
+zum Ändern eine Kopie speichern (der Editor macht das automatisch).
+
 Fehler (Tippfehler, Überschneidungen, Geräte ohne MIDI-Zuordnung) zeigt das Plugin
 gelb/rot an. Es stürzt deswegen nicht ab, und die restliche Konfiguration läuft weiter.
 
@@ -168,9 +182,9 @@ wird gezoomt – Schrift, Fader und Abstände bleiben im gleichen Verhältnis. G
 | Tab | Was |
 |---|---|
 | **Live** | Bühnenansicht, Fader pro Kanal, Konfig-Meldungen |
-| **Patch** | Geräte hinzufügen, entfernen, umsortieren; Fixture, Modus, Universum, Adresse, Anzahl |
+| **Patch** | mehrere benannte Patches; Geräte hinzufügen, entfernen, umsortieren; Fixture, Modus, Universum, Adresse, Anzahl |
 | **Fixtures** | eigene Fixtures anlegen und bearbeiten (Kanäle, Typen, Ruhewerte, Wertebereiche); QLC+-Fixtures als bearbeitbare Kopie |
-| **Fixture-Bibliothek** | alle ~1800 Fixtures aus QLC+, nach Herstellern sortiert und durchsuchbar; Modus wählen, mit einem Klick patchen |
+| **Fixture-Bibliothek** | alle ~1800 Fixtures aus QLC+, nach Herstellern sortiert und durchsuchbar; Modus wählen, direkt zum Patch hinzufügen (ohne Kopie) |
 | **Einstellungen** | Node-IP (mit Node-Suche per ArtPoll), Port, Rate, MIDI-Kanal → Universum/Block, Hz/BPM, Konfig-Ordner |
 
 Alles, was du im Plugin speicherst, landet in denselben Textdateien (vorherige Version

@@ -12,7 +12,7 @@ use nih_plug_egui::{create_egui_editor, widgets::ParamSlider};
 use crate::artnet;
 use crate::config::{
     self, Capability, ChanKind, Effect, FixtureChannel, FixtureType, Level, MidiTarget, NoteFmt,
-    PatchEntry, PatchedFixture, Settings, Show, TileInfo, UiPrefs, BLOCK_SIZE, UI_SCALES,
+    PatchEntry, PatchedFixture, Settings, Show, TileInfo, TypeInfo, UiPrefs, BLOCK_SIZE, UI_SCALES,
 };
 use crate::i18n::{self, t};
 use crate::library;
@@ -109,6 +109,15 @@ struct UiState {
     ip_text: String,
 
     fx_sel: Option<String>,
+    /// custom fixture whose deletion awaits confirmation (file name)
+    fx_confirm_delete: Option<String>,
+    /// fixture chosen for "+ Add device" in the patch tab
+    add_fx: Option<String>,
+
+    patch_list: Vec<String>,
+    patch_list_t: f64,
+    patch_new_name: String,
+    patch_confirm_delete: bool,
     fx_edit: Option<FxEdit>,
     new_fx_name: String,
     qxf_copy_mode: usize,
@@ -198,7 +207,7 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
                     .auto_shrink([false, false])
                     .show(ui, |ui| match st.tab {
                         Tab::Live => live_tab(ui, show, &shared, master, st),
-                        Tab::Patch => patch_tab(ui, show, &shared, st),
+                        Tab::Patch => patch_tab(ui, show, &params, &shared, st),
                         Tab::Fixtures => fixtures_tab(ui, show, &shared, st),
                         Tab::Library => {}
                         Tab::Settings => settings_tab(ui, show, &params, &shared, st),
@@ -555,12 +564,9 @@ fn header_rows(
     st: &mut UiState,
 ) {
     ui.horizontal(|ui| {
-        ui.label("Master");
-        ui.add(ParamSlider::for_param(&params.master, setter));
-        toggle(ui, setter, &params.blackout, "Blackout");
-        toggle(ui, setter, &params.output_enabled, t("Art-Net Ausgabe", "Art-Net output"));
-
-        // size and language like in Waves plugins: top right
+        // size and language like in Waves plugins: top right. Laid out first so
+        // that the controls on the left wrap into a second row instead of
+        // overlapping them when the window is narrow.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let mut scale = st.prefs.scale;
             egui::ComboBox::from_id_salt("scale")
@@ -601,6 +607,17 @@ fn header_rows(
             })
             .response
             .on_hover_text(t("Projekt unterstützen", "Support the project"));
+
+            ui.add_space(12.0);
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                |ui| {
+                    ui.label("Master");
+                    ui.add(ParamSlider::for_param(&params.master, setter).with_width(110.0));
+                    toggle(ui, setter, &params.blackout, "Blackout");
+                    toggle(ui, setter, &params.output_enabled, t("Art-Net Ausgabe", "Art-Net output"));
+                },
+            );
         });
     });
 
@@ -1024,11 +1041,213 @@ enum RowAction {
     Remove(usize),
 }
 
-fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) {
+/// Short source tag for a fixture type in lists
+fn type_src(ti: &TypeInfo) -> &'static str {
+    if ti.from_library {
+        t("Bibliothek", "Library")
+    } else if ti.is_qxf {
+        "QLC+"
+    } else {
+        "txt"
+    }
+}
+
+fn patch_display_name(name: &str) -> String {
+    if name.is_empty() {
+        t("Standard (patch.txt)", "Default (patch.txt)").to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Make another patch the active one of this plugin instance
+fn switch_patch(params: &BridgeParams, shared: &Shared, name: &str) {
+    if let Ok(mut g) = params.patch_name.write() {
+        *g = name.to_string();
+    }
+    shared.reload_request.store(true, Relaxed);
+}
+
+/// Patch files: choose, create, save as, rename, delete
+fn patch_files(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &Shared, st: &mut UiState) {
     let dirty = st.patch != st.patch_base;
+    let now = ui.input(|i| i.time);
+    if st.patch_list_t == 0.0 || now - st.patch_list_t > 2.0 {
+        st.patch_list = config::list_patches(&show.dir);
+        st.patch_list_t = now.max(0.001);
+    }
+    let active = show.patch_name.clone();
+    let mut result: Option<Result<String, String>> = None;
+
+    section(ui, t("Patches", "Patches"), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(t("Aktiv:", "Active:"));
+            let mut pick: Option<String> = None;
+            let r = ui.add_enabled_ui(!dirty, |ui| {
+                egui::ComboBox::from_id_salt("patchsel")
+                    .selected_text(patch_display_name(&active))
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(active.is_empty(), patch_display_name("")).clicked() {
+                            pick = Some(String::new());
+                        }
+                        for n in &st.patch_list {
+                            if ui.selectable_label(*n == active, n.as_str()).clicked() {
+                                pick = Some(n.clone());
+                            }
+                        }
+                    });
+            });
+            if dirty {
+                let _ = r.response.on_hover_text(t(
+                    "Erst die Änderungen speichern oder verwerfen.",
+                    "Save or discard your changes first.",
+                ));
+            }
+            if let Some(n) = pick {
+                if n != active {
+                    switch_patch(params, shared, &n);
+                    st.patch_confirm_delete = false;
+                }
+            }
+            ui.label(RichText::new(show.patch_file.as_str()).weak().monospace());
+            if ui.button(t("Ordner öffnen", "Open folder")).clicked() {
+                let d = show.dir.join(config::PATCH_DIR);
+                let _ = std::fs::create_dir_all(&d);
+                open_path(&d);
+            }
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut st.patch_new_name)
+                    .hint_text(t("Name, z. B. „Tour 2027“", "name, e.g. “Tour 2027”"))
+                    .desired_width(180.0),
+            );
+            let has_name = !config::sanitize_patch_name(&st.patch_new_name).is_empty();
+            if ui
+                .add_enabled(has_name && !dirty, egui::Button::new(t("Neu (leer)", "New (empty)")))
+                .on_hover_text(t("Legt einen leeren Patch an und aktiviert ihn.", "Creates an empty patch and makes it active."))
+                .clicked()
+            {
+                result = Some(config::create_patch(&show.dir, &st.patch_new_name, &[]).map(|n| {
+                    switch_patch(params, shared, &n);
+                    tf!("Patch „{n}“ angelegt", "Patch “{n}” created")
+                }));
+            }
+            if ui
+                .add_enabled(has_name, egui::Button::new(t("Speichern unter …", "Save as …")))
+                .on_hover_text(t(
+                    "Speichert die aktuelle Liste (auch ungespeicherte Änderungen) als neuen Patch und aktiviert ihn.",
+                    "Saves the current list (including unsaved changes) as a new patch and makes it active.",
+                ))
+                .clicked()
+            {
+                let entries = st.patch.clone();
+                result = Some(config::create_patch(&show.dir, &st.patch_new_name, &entries).map(|n| {
+                    st.patch_base = entries.clone();
+                    switch_patch(params, shared, &n);
+                    tf!("Gespeichert als „{n}“", "Saved as “{n}”")
+                }));
+            }
+            if ui
+                .add_enabled(
+                    has_name && !active.is_empty() && !dirty,
+                    egui::Button::new(t("Umbenennen", "Rename")),
+                )
+                .on_hover_text(t("Benennt den aktiven Patch um.", "Renames the active patch."))
+                .clicked()
+            {
+                result = Some(config::rename_patch(&show.dir, &active, &st.patch_new_name).map(|n| {
+                    switch_patch(params, shared, &n);
+                    tf!("Umbenannt in „{n}“", "Renamed to “{n}”")
+                }));
+            }
+
+            if !active.is_empty() {
+                ui.separator();
+                if !st.patch_confirm_delete {
+                    if ui.button(t("Löschen …", "Delete …")).clicked() {
+                        st.patch_confirm_delete = true;
+                    }
+                } else {
+                    ui.colored_label(RED, tf!("„{active}“ wirklich löschen?", "Really delete “{active}”?"));
+                    if ui.button(t("Ja, löschen", "Yes, delete")).clicked() {
+                        st.patch_confirm_delete = false;
+                        result = Some(config::delete_patch(&show.dir, &active).map(|_| {
+                            st.patch = Vec::new();
+                            st.patch_base = Vec::new();
+                            switch_patch(params, shared, "");
+                            tf!("Patch „{active}“ gelöscht", "Patch “{active}” deleted")
+                        }));
+                    }
+                    if ui.button(t("Abbrechen", "Cancel")).clicked() {
+                        st.patch_confirm_delete = false;
+                    }
+                }
+            }
+        });
+        ui.label(
+            RichText::new(t(
+                "Welcher Patch aktiv ist, speichert jede Plugin-Instanz im DAW-Projekt.",
+                "Each plugin instance remembers its active patch in the DAW project.",
+            ))
+            .weak()
+            .small(),
+        );
+    });
+
+    if let Some(r) = result {
+        if r.is_ok() {
+            st.patch_new_name.clear();
+        }
+        st.patch_list_t = 0.0;
+        report(st, shared, r);
+    }
+}
+
+fn patch_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &Shared, st: &mut UiState) {
+    patch_files(ui, show, params, shared, st);
+    ui.add_space(6.0);
+
+    let dirty = st.patch != st.patch_base;
+    // fixture for "+ Add device": follows the selection in the Custom Fixtures tab
+    if st.add_fx.as_ref().map_or(true, |id| show.type_info(id).is_none()) {
+        st.add_fx = st
+            .fx_sel
+            .clone()
+            .filter(|id| show.type_info(id).is_some())
+            .or_else(|| show.types.first().map(|ti| ti.ft.id.clone()));
+    }
     ui.horizontal_wrapped(|ui| {
-        if ui.button(t("+ Gerät", "+ Device")).clicked() {
-            if let Some(ti) = show.types.first() {
+        let add_label = st
+            .add_fx
+            .as_deref()
+            .and_then(|id| show.type_info(id))
+            .map(|ti| ti.ft.name.clone())
+            .unwrap_or_else(|| t("– Fixture wählen –", "– choose a fixture –").into());
+        egui::ComboBox::from_id_salt("addfx")
+            .selected_text(add_label)
+            .width(240.0)
+            .show_ui(ui, |ui| {
+                for ti in &show.types {
+                    if ui
+                        .selectable_label(
+                            st.add_fx.as_deref() == Some(ti.ft.id.as_str()),
+                            format!("{}  ({})", ti.ft.name, type_src(ti)),
+                        )
+                        .clicked()
+                    {
+                        st.add_fx = Some(ti.ft.id.clone());
+                    }
+                }
+            });
+        let chosen = st.add_fx.as_deref().and_then(|id| show.type_info(id));
+        if ui
+            .add_enabled(chosen.is_some(), egui::Button::new(t("+ Gerät hinzufügen", "+ Add device")))
+            .clicked()
+        {
+            if let Some(ti) = chosen {
                 let len = ti.ft.modes.first().map_or(1, |m| m.channels.len());
                 let address = show.next_free_address(&st.patch, 0, len).unwrap_or(1);
                 st.patch.push(PatchEntry {
@@ -1044,8 +1263,9 @@ fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) 
         }
         ui.separator();
         if ui.add_enabled(dirty, egui::Button::new(t("Speichern", "Save"))).clicked() {
-            let r = config::write_patch(&show.dir, &st.patch)
-                .map(|_| t("patch.txt gespeichert", "patch.txt saved").to_string());
+            let file = show.patch_file.clone();
+            let r = config::write_patch(&config::patch_path(&show.dir, &show.patch_name), &st.patch)
+                .map(|_| tf!("{file} gespeichert", "{file} saved"));
             if r.is_ok() {
                 st.patch_base = st.patch.clone();
             }
@@ -1062,8 +1282,8 @@ fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) 
     info_line(ui, st);
     ui.label(
         RichText::new(t(
-            "Neue Gerätetypen findest du im Tab „Fixture-Bibliothek“ oder legst sie unter „Eigene Fixtures“ an.",
-            "New device types: see the “Fixture Library” tab or create them under “Custom Fixtures”.",
+            "Weitere Gerätetypen: im Tab „Fixture-Bibliothek“ direkt „Zum Patch hinzufügen“ oder unter „Eigene Fixtures“ selbst anlegen.",
+            "More device types: “Add to patch” right in the “Fixture Library” tab, or create your own under “Custom Fixtures”.",
         ))
         .weak()
         .small(),
@@ -1110,9 +1330,11 @@ fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) 
                         .width(200.0)
                         .show_ui(ui, |ui| {
                             for ti in &show.types {
-                                let src = if ti.is_qxf { "QLC+" } else { "txt" };
                                 if ui
-                                    .selectable_label(e.fixture == ti.ft.id, format!("{}  ({src})", ti.ft.name))
+                                    .selectable_label(
+                                        e.fixture == ti.ft.id,
+                                        format!("{}  ({})", ti.ft.name, type_src(ti)),
+                                    )
                                     .clicked()
                                 {
                                     e.fixture = ti.ft.id.clone();
@@ -1191,7 +1413,7 @@ fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) 
         .iter()
         .filter(|m| {
             m.level != Level::Info
-                && (m.text.starts_with("patch.txt")
+                && (m.text.starts_with(show.patch_file.as_str())
                     || m.text.contains("Überschneidung")
                     || m.text.contains("Overlap")
                     || m.text.contains("MIDI"))
@@ -1242,12 +1464,11 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
                 .selected_text(sel_label)
                 .width(300.0)
                 .show_ui(ui, |ui| {
-                    for ti in &show.types {
-                        let src = if ti.is_qxf { "QLC+" } else { "txt" };
+                    for ti in show.types.iter().filter(|ti| !ti.from_library) {
                         if ui
                             .selectable_label(
                                 st.fx_sel.as_deref() == Some(ti.ft.id.as_str()),
-                                format!("{}  ({src})", ti.ft.name),
+                                format!("{}  ({})", ti.ft.name, type_src(ti)),
                             )
                             .clicked()
                         {
@@ -1257,6 +1478,8 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
                 });
             if let Some(id) = picked {
                 st.fx_edit = load_fx_edit(show, &id);
+                st.add_fx = Some(id.clone());
+                st.fx_confirm_delete = None;
                 st.fx_sel = Some(id);
                 st.qxf_copy_mode = 0;
                 st.info = None;
@@ -1289,22 +1512,50 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
                 st.fx_sel = Some(id);
                 st.new_fx_name.clear();
             }
-            ui.separator();
-            if ui
-                .button(t("Generic-Vorlagen hinzufügen", "Add generic templates"))
-                .on_hover_text(t(
-                    "Legt fehlende Vorlagen (Generic Dimmer, PAR, Wall Washer, Moving Head) in fixtures/ an – \
-                     überschreibt nichts.",
-                    "Creates missing templates (generic dimmer, PAR, wall washer, moving head) in fixtures/ – \
-                     never overwrites anything.",
-                ))
-                .clicked()
-            {
-                let r = config::add_generic_templates(&show.dir).map(|n| match n {
-                    0 => t("Alle Vorlagen sind schon vorhanden.", "All templates already exist.").to_string(),
-                    n => tf!("{n} Vorlage(n) angelegt.", "{n} template(s) created."),
-                });
-                report(st, shared, r);
+
+            // delete the selected custom fixture (generic templates come back automatically)
+            let deletable = st
+                .fx_sel
+                .as_deref()
+                .and_then(|id| show.type_info(id))
+                .filter(|ti| !ti.from_library && !config::is_generic_template(&ti.ft.id));
+            if let Some(ti) = deletable {
+                ui.separator();
+                if st.fx_confirm_delete.as_deref() != Some(ti.file.as_str()) {
+                    if ui
+                        .button(t("Löschen …", "Delete …"))
+                        .on_hover_text(tf!("Löscht fixtures/{}", "Deletes fixtures/{}", ti.file))
+                        .clicked()
+                    {
+                        st.fx_confirm_delete = Some(ti.file.clone());
+                    }
+                } else {
+                    let used = show.patch.iter().filter(|e| e.fixture == ti.ft.id).count();
+                    let q = if used > 0 {
+                        tf!(
+                            "„{}“ wirklich löschen? Wird im aktiven Patch {used}× benutzt!",
+                            "Really delete “{}”? Used {used}× in the active patch!",
+                            ti.ft.name
+                        )
+                    } else {
+                        tf!("„{}“ wirklich löschen?", "Really delete “{}”?", ti.ft.name)
+                    };
+                    ui.colored_label(RED, q);
+                    if ui.button(t("Ja, löschen", "Yes, delete")).clicked() {
+                        let file = ti.file.clone();
+                        let r = config::delete_fixture(&show.dir, &file)
+                            .map(|_| tf!("fixtures/{file} gelöscht", "fixtures/{file} deleted"));
+                        if r.is_ok() {
+                            st.fx_sel = None;
+                            st.fx_edit = None;
+                        }
+                        st.fx_confirm_delete = None;
+                        report(st, shared, r);
+                    }
+                    if ui.button(t("Abbrechen", "Cancel")).clicked() {
+                        st.fx_confirm_delete = None;
+                    }
+                }
             }
         });
         info_line(ui, st);
@@ -1375,14 +1626,30 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
     let mut save = false;
     let mut discard = false;
 
+    let generic = config::is_generic_template(&fx.id);
     section(ui, t("Fixture bearbeiten", "Edit fixture"), |ui| {
+        if generic {
+            ui.label(
+                RichText::new(t(
+                    "Mitgelieferte Vorlage – wird bei Updates automatisch erneuert. Änderungen werden als Kopie gespeichert.",
+                    "Shipped template – updated automatically with new versions. Changes are saved as a copy.",
+                ))
+                .weak()
+                .small(),
+            );
+        }
         ui.horizontal_wrapped(|ui| {
             ui.label(t("Name:", "Name:"));
             ui.add(egui::TextEdit::singleline(&mut fx.name).desired_width(260.0));
             ui.label(RichText::new(tf!("Datei: fixtures/{}.txt", "File: fixtures/{}.txt", fx.id)).weak());
         });
         ui.horizontal_wrapped(|ui| {
-            save = ui.add_enabled(dirty, egui::Button::new(t("Speichern", "Save"))).clicked();
+            let save_label = if generic {
+                t("Als Kopie speichern", "Save as copy")
+            } else {
+                t("Speichern", "Save")
+            };
+            save = ui.add_enabled(dirty, egui::Button::new(save_label)).clicked();
             discard = ui
                 .add_enabled(dirty && fx.base.is_some(), egui::Button::new(t("Verwerfen", "Discard")))
                 .clicked();
@@ -1492,6 +1759,15 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
         }
     }
     if save {
+        if generic {
+            // never overwrite a shipped template – it would be replaced again anyway
+            fx.id = config::unique_fixture_id(&show.dir, &format!("{}_copy", fx.id));
+            if fx.base.as_ref().map_or(false, |(n, _)| *n == fx.name) {
+                fx.name = tf!("{} (Kopie)", "{} (copy)", fx.name);
+            }
+            fx.base = None;
+            st.fx_sel = Some(fx.id.clone());
+        }
         let r = config::write_fixture_txt(&show.dir, &fx.id, &fx.name, &fx.channels, None);
         if r.is_ok() {
             fx.base = Some((fx.name.clone(), fx.channels.clone()));
@@ -1699,15 +1975,24 @@ fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState
     );
     ui.separator();
 
-    let height = ui.available_height();
+    let avail = ui.available_size();
+    let height = avail.y;
+    // narrow list on the left (manufacturer + model names), more room for details
+    let left_w = (avail.x * 0.30).clamp(180.0, 320.0);
     let mut clicked: Option<usize> = None;
-    ui.columns(2, |cols| {
+    ui.horizontal_top(|ui| {
         // ---- left: manufacturer folders ----
-        egui::ScrollArea::vertical()
+        ui.allocate_ui_with_layout(
+            egui::vec2(left_w, height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+        egui::ScrollArea::both()
             .id_salt("lib-tree")
             .max_height(height)
             .auto_shrink([false, false])
-            .show(&mut cols[0], |ui| {
+            .show(ui, |ui| {
+                // long names: scroll sideways instead of wrapping
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 let force_open = searching && total <= 150;
                 let groups: Vec<(usize, &[usize])> = if searching {
                     st.lib_hits.iter().map(|(g, h)| (*g, h.as_slice())).collect()
@@ -1739,12 +2024,23 @@ fn library_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState
                 }
             });
 
+            },
+        );
+        ui.separator();
+
         // ---- right: details + patching ----
-        egui::ScrollArea::vertical()
-            .id_salt("lib-detail")
-            .max_height(height)
-            .auto_shrink([false, false])
-            .show(&mut cols[1], |ui| library_detail(ui, lib, show, shared, st));
+        let right_w = ui.available_width();
+        ui.allocate_ui_with_layout(
+            egui::vec2(right_w, height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                egui::ScrollArea::both()
+                    .id_salt("lib-detail")
+                    .max_height(height)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| library_detail(ui, lib, show, shared, st));
+            },
+        );
     });
     if let Some(i) = clicked {
         st.lib_sel = Some(i);
@@ -1818,7 +2114,11 @@ fn library_detail(
 
     egui::CollapsingHeader::new(tf!("Kanäle im Modus „{}“", "Channels in mode “{}”", mode.name))
         .default_open(false)
-        .show(ui, |ui| channel_overview(ui, &mode.channels));
+        .show(ui, |ui| {
+            // capability lists can be long: scroll sideways instead of overflowing
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            channel_overview(ui, &mode.channels)
+        });
 
     ui.add_space(4.0);
     egui::Grid::new("libpatch").num_columns(2).show(ui, |ui| {
@@ -1856,48 +2156,62 @@ fn library_detail(
     };
 
     ui.add_space(4.0);
-    if ui.button(t("Hinzufügen und patchen", "Add and patch")).clicked() {
-        if let Ok(id) = install(st) {
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button(t("Zum Patch hinzufügen", "Add to patch"))
+            .on_hover_text(tf!(
+                "Benutzt das Fixture direkt aus der Bibliothek und speichert {}.",
+                "Uses the fixture straight from the library and saves {}.",
+                show.patch_file
+            ))
+            .clicked()
+        {
+            let id = format!("{}{}", config::LIB_PREFIX, library::slug(&e.manufacturer, &e.model));
             st.patch.push(PatchEntry {
                 name: if st.lib_name.trim().is_empty() {
                     e.model.clone()
                 } else {
                     st.lib_name.trim().to_string()
                 },
-                fixture: id.clone(),
+                fixture: id,
                 universe: st.lib_universe,
                 address: st.lib_address.max(1),
                 mode: (ft.modes.len() > 1).then(|| mode.name.clone()),
                 count: st.lib_count.max(1),
                 spacing: None,
             });
-            let r = config::write_patch(&show.dir, &st.patch);
+            let r = config::write_patch(&config::patch_path(&show.dir, &show.patch_name), &st.patch);
             if r.is_ok() {
                 st.patch_base = st.patch.clone();
             }
             let addr = st.lib_address;
             st.lib_address = 0;
+            let file = show.patch_file.clone();
             report(
                 st,
                 shared,
                 r.map(|_| {
                     tf!(
-                        "„{}“ ab Adresse {addr} gepatcht (fixtures/{id}.qxf)",
-                        "“{}” patched from address {addr} (fixtures/{id}.qxf)",
+                        "„{}“ ab Adresse {addr} gepatcht ({file})",
+                        "“{}” patched from address {addr} ({file})",
                         e.model
                     )
                 }),
             );
         }
-    }
-    if ui
-        .button(t("Nur zu den Fixtures hinzufügen", "Only add to fixtures"))
-        .clicked()
-    {
-        if let Ok(id) = install(st) {
-            report(st, shared, Ok(tf!("fixtures/{id}.qxf angelegt", "fixtures/{id}.qxf created")));
+        if ui
+            .button(t("In Eigene Fixtures kopieren", "Copy to Custom Fixtures"))
+            .on_hover_text(t(
+                "Nur nötig, wenn du das Fixture anpassen willst.",
+                "Only needed if you want to modify the fixture.",
+            ))
+            .clicked()
+        {
+            if let Ok(id) = install(st) {
+                report(st, shared, Ok(tf!("fixtures/{id}.qxf angelegt", "fixtures/{id}.qxf created")));
+            }
         }
-    }
+    });
     info_line(ui, st);
     attribution(ui);
 }

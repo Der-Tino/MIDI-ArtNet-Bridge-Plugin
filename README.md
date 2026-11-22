@@ -72,7 +72,8 @@ the whole folder.
 ```
 DMX-Bridge/
 ├── config.txt          Art-Net target IP, refresh rate, MIDI channel → universe/block
-├── patch.txt           name | fixture | universe | start address
+├── patch.txt           default patch: name | fixture | universe | start address
+├── patches/            more named patches (Tour.txt, Club.txt, …)
 ├── fixtures/           one fixture type per file (.txt or QLC+ .qxf)
 ├── ui.txt              UI size, language, Hz/BPM, note display (global, all projects)
 └── reaper-notennamen/  Reaper note-name files (created on request)
@@ -147,6 +148,18 @@ Spot   | my_spot         | 0 | 105 | mode=8 Channel    ← mode of a .qxf fixtur
 
 Optional columns: `mode=…`, `count=n` (or `x12`), `spacing=n` (address step,
 default = channel count).
+
+A fixture written as `lib:<manufacturer_model>` (e.g. `lib:eurolite_led_par_56`) is used
+straight from the built-in library – *Fixture Library → Add to patch* does that for you,
+so library fixtures don't have to be copied to `fixtures/`. Copy one to *Custom
+Fixtures* only if you want to change it.
+
+**Several patches:** besides `patch.txt` you can keep named patches in `patches/`
+(*Patch → Patches*: new, save as, rename, delete). Each plugin instance remembers its
+active patch in the DAW project, so different songs or projects can use different patches.
+
+The `generic_*` templates in `fixtures/` are installed and kept up to date by the
+plugin; to change one, save a copy (the editor does that automatically).
 
 ## Reaper setup
 

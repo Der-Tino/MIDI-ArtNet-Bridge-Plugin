@@ -38,6 +38,10 @@ pub struct BridgeParams {
     #[persist = "config-dir"]
     pub config_dir: RwLock<String>,
 
+    /// aktiver Patch dieser Instanz ("" = patch.txt, sonst patches/<name>.txt)
+    #[persist = "patch-name"]
+    pub patch_name: RwLock<String>,
+
     /// wirkt auf alle Dimmer-/Farbkanäle, automatisierbar
     #[id = "master"]
     pub master: FloatParam,
@@ -58,6 +62,7 @@ impl Default for BridgeParams {
                 EguiState::from_size(w, h)
             },
             config_dir: RwLock::new(String::new()),
+            patch_name: RwLock::new(String::new()),
             master: FloatParam::new("Master", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))

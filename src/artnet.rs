@@ -61,6 +61,15 @@ pub fn effective_dir(params: &BridgeParams) -> PathBuf {
     }
 }
 
+/// Aktiver Patch dieser Instanz ("" = patch.txt)
+pub fn effective_patch(params: &BridgeParams) -> String {
+    params
+        .patch_name
+        .read()
+        .map(|s| config::sanitize_patch_name(&s))
+        .unwrap_or_default()
+}
+
 fn make_socket() -> std::io::Result<UdpSocket> {
     let s = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
     s.set_broadcast(true)?;
@@ -107,10 +116,11 @@ fn run(shared: Arc<Shared>, params: Arc<BridgeParams>, stop: Arc<AtomicBool>) {
         if forced || last_check.map_or(true, |t| now.duration_since(t) >= CHECK_INTERVAL) {
             last_check = Some(now);
             let dir = effective_dir(&params);
-            let new_fp = config::fingerprint(&dir);
+            let patch = effective_patch(&params);
+            let new_fp = config::fingerprint(&dir, &patch);
             if forced || current_dir.as_ref() != Some(&dir) || new_fp != fp {
-                let show = config::load_show(&dir);
-                fp = config::fingerprint(&dir);
+                let show = config::load_show(&dir, &patch);
+                fp = config::fingerprint(&dir, &patch);
                 target = SocketAddrV4::new(show.artnet_ip, show.artnet_port);
                 refresh = Duration::from_secs_f32(1.0 / show.refresh_hz);
                 shared.apply_show(&show);

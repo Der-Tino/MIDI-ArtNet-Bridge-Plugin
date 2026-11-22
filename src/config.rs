@@ -3,6 +3,9 @@
 //! Ordnerstruktur (Standard: Dokumente/DMX-Bridge):
 //!   config.txt          Art-Net-Ziel, MIDI-Kanal → Universum/Block
 //!   patch.txt           Name | Fixture | Universum | Adresse | [Modus] [anzahl=n]
+//!                       (Standard-Patch; weitere benannte Patches in patches/*.txt,
+//!                       welcher aktiv ist, merkt sich jede Plugin-Instanz)
+//!                       Fixture `lib:<slug>` = direkt aus der eingebauten Bibliothek
 //!   fixtures/*.txt      eigenes Textformat (ein Typ pro Datei)
 //!   fixtures/*.qxf      QLC+-Fixture-Definitionen, direkt importiert
 //!
@@ -469,6 +472,10 @@ pub struct Show {
     pub messages: Vec<Message>,
     /// Patch-Zeilen wie in patch.txt (für den Editor)
     pub patch: Vec<PatchEntry>,
+    /// Name des aktiven Patches ("" = patch.txt)
+    pub patch_name: String,
+    /// Datei des aktiven Patches relativ zum Ordner, z. B. "patch.txt" oder "patches/Tour.txt"
+    pub patch_file: String,
     /// alle Fixture-Typen aus fixtures/
     pub types: Vec<TypeInfo>,
     /// Universum → 512 Slots → (Fixture-Index, Kanal-Index)
@@ -492,6 +499,8 @@ pub struct TypeInfo {
     pub ft: FixtureType,
     pub file: String,
     pub is_qxf: bool,
+    /// direkt aus der eingebauten Bibliothek (ID `lib:<slug>`), nicht in fixtures/
+    pub from_library: bool,
 }
 
 /// Bearbeitbare Grundeinstellungen (config.txt)
@@ -572,6 +581,8 @@ impl Show {
             fixtures: Vec::new(),
             messages: Vec::new(),
             patch: Vec::new(),
+            patch_name: String::new(),
+            patch_file: "patch.txt".into(),
             types: Vec::new(),
             slots: HashMap::new(),
         }
@@ -651,7 +662,7 @@ pub fn default_config_dir() -> PathBuf {
 
 /// Lädt den kompletten Show-Ordner. Schlägt nie fehl – Probleme landen in
 /// `show.messages`, im Zweifel gelten Standardwerte.
-pub fn load_show(dir: &Path) -> Show {
+pub fn load_show(dir: &Path, patch_name: &str) -> Show {
     crate::i18n::set_english(read_ui_prefs(dir).english);
     let mut show = Show::empty(dir.to_path_buf());
 
@@ -668,16 +679,40 @@ pub fn load_show(dir: &Path) -> Show {
         }
     }
 
+    match sync_generic_templates(dir) {
+        Ok(0) => {}
+        Ok(n) => show.msg(
+            Level::Info,
+            tf!("{n} Generic-Vorlage(n) installiert/aktualisiert", "{n} generic template(s) installed/updated"),
+        ),
+        Err(e) => show.msg(Level::Warn, tf!("Generic-Vorlagen: {e}", "Generic templates: {e}")),
+    }
+
     match read_text(&dir.join("config.txt")) {
         Ok(t) => parse_config(&mut show, &t),
         Err(e) => show.msg(Level::Warn, tf!("config.txt: {e} – Standardwerte aktiv", "config.txt: {e} – using defaults")),
     }
 
-    let types = load_fixture_types(&mut show, &dir.join("fixtures"));
+    let mut types = load_fixture_types(&mut show, &dir.join("fixtures"));
 
-    match read_text(&dir.join("patch.txt")) {
-        Ok(t) => parse_patch(&mut show, &t, &types),
+    show.patch_name = sanitize_patch_name(patch_name);
+    show.patch_file = patch_label(&show.patch_name);
+    let first_msg = show.messages.len();
+    match read_text(&patch_path(dir, &show.patch_name)) {
+        Ok(t) => {
+            add_library_types(&mut show, &t, &mut types);
+            parse_patch(&mut show, &t, &types)
+        }
         Err(e) => show.msg(Level::Warn, tf!("patch.txt: {e} – nichts gepatcht", "patch.txt: {e} – nothing patched")),
+    }
+    // Meldungen auf den echten Dateinamen umschreiben
+    if show.patch_file != "patch.txt" {
+        let label = show.patch_file.clone();
+        for m in show.messages[first_msg..].iter_mut() {
+            if m.text.starts_with("patch.txt") {
+                m.text = m.text.replacen("patch.txt", &label, 1);
+            }
+        }
     }
     let mut infos: Vec<TypeInfo> = types.into_values().collect();
     infos.sort_by(|a, b| a.ft.name.to_lowercase().cmp(&b.ft.name.to_lowercase()));
@@ -696,7 +731,7 @@ pub fn load_show(dir: &Path) -> Show {
 
 /// Billiger Fingerabdruck (Größe + Änderungszeit) aller relevanten Dateien,
 /// damit gespeicherte Änderungen automatisch neu geladen werden.
-pub fn fingerprint(dir: &Path) -> u64 {
+pub fn fingerprint(dir: &Path, patch_name: &str) -> u64 {
     fn meta(p: &Path, h: &mut DefaultHasher) {
         match fs::metadata(p) {
             Ok(m) => {
@@ -711,7 +746,8 @@ pub fn fingerprint(dir: &Path) -> u64 {
     let mut h = DefaultHasher::new();
     dir.hash(&mut h);
     meta(&dir.join("config.txt"), &mut h);
-    meta(&dir.join("patch.txt"), &mut h);
+    patch_name.hash(&mut h);
+    meta(&patch_path(dir, &sanitize_patch_name(patch_name)), &mut h);
     if let Ok(rd) = fs::read_dir(dir.join("fixtures")) {
         let mut paths: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
         paths.sort();
@@ -723,19 +759,176 @@ pub fn fingerprint(dir: &Path) -> u64 {
     h.finish()
 }
 
-/// Write the generic fixture templates that are missing in fixtures/ (never overwrites).
-/// Returns how many files were created.
-pub fn add_generic_templates(dir: &Path) -> Result<usize, String> {
+/// Generic templates shipped with the plugin: written to fixtures/ when missing
+/// or different from the shipped version (so fixes reach everybody).
+/// Returns how many files were written.
+pub fn sync_generic_templates(dir: &Path) -> Result<usize, String> {
     fs::create_dir_all(dir.join("fixtures")).map_err(|e| e.to_string())?;
     let mut n = 0;
     for (rel, content) in EXAMPLES.iter().filter(|(rel, _)| rel.starts_with("fixtures/")) {
         let p = dir.join(rel);
-        if !p.exists() {
+        let same = fs::read_to_string(&p).map(|t| t == *content).unwrap_or(false);
+        if !same {
             fs::write(&p, content).map_err(|e| e.to_string())?;
             n += 1;
         }
     }
     Ok(n)
+}
+
+/// Is this fixture ID one of the shipped generic templates (kept up to date automatically)?
+pub fn is_generic_template(id: &str) -> bool {
+    EXAMPLES
+        .iter()
+        .filter_map(|(rel, _)| rel.strip_prefix("fixtures/"))
+        .any(|f| f.trim_end_matches(".txt") == id)
+}
+
+/// Delete a fixture file from fixtures/ (only plain file names, no paths)
+pub fn delete_fixture(dir: &Path, file: &str) -> Result<(), String> {
+    if file.is_empty() || file.contains('/') || file.contains('\\') || file.contains("..") {
+        return Err(t("Ungültiger Dateiname", "Invalid file name").into());
+    }
+    fs::remove_file(dir.join("fixtures").join(file)).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Patches: patch.txt (default) + named patches in patches/*.txt
+// ---------------------------------------------------------------------------
+
+pub const PATCH_DIR: &str = "patches";
+/// Prefix for fixtures used directly from the built-in library
+pub const LIB_PREFIX: &str = "lib:";
+
+/// Allowed patch name: no path characters, trimmed, max. 60 characters
+pub fn sanitize_patch_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !matches!(*c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') && !c.is_control())
+        .take(60)
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').trim().to_string();
+    if cleaned.eq_ignore_ascii_case("patch") {
+        String::new()
+    } else {
+        cleaned
+    }
+}
+
+/// File of a patch: "" → patch.txt, otherwise patches/<name>.txt
+pub fn patch_path(dir: &Path, name: &str) -> PathBuf {
+    if name.is_empty() {
+        dir.join("patch.txt")
+    } else {
+        dir.join(PATCH_DIR).join(format!("{name}.txt"))
+    }
+}
+
+/// Display file name relative to the config folder
+pub fn patch_label(name: &str) -> String {
+    if name.is_empty() {
+        "patch.txt".into()
+    } else {
+        format!("{PATCH_DIR}/{name}.txt")
+    }
+}
+
+/// Names of all saved patches in patches/ (sorted, without the default patch.txt)
+pub fn list_patches(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = fs::read_dir(dir.join(PATCH_DIR))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("txt")))
+                .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+                .filter(|n| !sanitize_patch_name(n).is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort_by_key(|n| n.to_lowercase());
+    v
+}
+
+/// Create a new patch file (fails if the name is taken). Returns the clean name.
+pub fn create_patch(dir: &Path, name: &str, entries: &[PatchEntry]) -> Result<String, String> {
+    let name = sanitize_patch_name(name);
+    if name.is_empty() {
+        return Err(t("Bitte einen Namen eingeben (nicht „patch“).", "Please enter a name (not “patch”).").into());
+    }
+    let p = patch_path(dir, &name);
+    if p.exists() {
+        return Err(tf!("Patch „{name}“ gibt es schon.", "Patch “{name}” already exists."));
+    }
+    fs::create_dir_all(dir.join(PATCH_DIR)).map_err(|e| e.to_string())?;
+    write_patch(&p, entries)?;
+    Ok(name)
+}
+
+pub fn rename_patch(dir: &Path, old: &str, new: &str) -> Result<String, String> {
+    let new = sanitize_patch_name(new);
+    if old.is_empty() || new.is_empty() {
+        return Err(t("Der Standard-Patch kann nicht umbenannt werden.", "The default patch cannot be renamed.").into());
+    }
+    let to = patch_path(dir, &new);
+    if to.exists() && !new.eq_ignore_ascii_case(old) {
+        return Err(tf!("Patch „{new}“ gibt es schon.", "Patch “{new}” already exists."));
+    }
+    fs::rename(patch_path(dir, old), to).map_err(|e| e.to_string())?;
+    Ok(new)
+}
+
+pub fn delete_patch(dir: &Path, name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err(t("Der Standard-Patch kann nicht gelöscht werden.", "The default patch cannot be deleted.").into());
+    }
+    fs::remove_file(patch_path(dir, name)).map_err(|e| e.to_string())
+}
+
+/// Fixture types the patch uses directly from the built-in library (`lib:<slug>`)
+fn add_library_types(show: &mut Show, patch_text: &str, types: &mut HashMap<String, TypeInfo>) {
+    for (ln, line) in clean_lines(patch_text) {
+        let Some(col) = line.split('|').nth(1) else { continue };
+        let id = col.trim().to_lowercase();
+        let Some(slug) = id.strip_prefix(LIB_PREFIX) else { continue };
+        if types.contains_key(&id) {
+            continue;
+        }
+        let lib = match crate::library::get() {
+            Ok(l) => l,
+            Err(e) => {
+                show.msg(Level::Error, tf!("Bibliothek nicht ladbar: {e}", "Library could not be loaded: {e}"));
+                return;
+            }
+        };
+        let Some(e) = lib
+            .entries
+            .iter()
+            .find(|e| crate::library::slug(&e.manufacturer, &e.model) == slug)
+        else {
+            show.msg(
+                Level::Error,
+                tf!(
+                    "patch.txt Zeile {ln}: '{id}' nicht in der Bibliothek",
+                    "patch.txt line {ln}: '{id}' not in the library"
+                ),
+            );
+            continue;
+        };
+        match qxf::parse_qxf(&id, &lib.text(e)) {
+            Ok((ft, _)) => {
+                types.insert(
+                    id.clone(),
+                    TypeInfo {
+                        ft,
+                        file: format!("{} {}", e.manufacturer.replace('_', " "), e.model),
+                        is_qxf: true,
+                        from_library: true,
+                    },
+                );
+            }
+            Err(err) => show.msg(Level::Error, format!("{id}: {err}")),
+        }
+    }
 }
 
 fn write_examples(dir: &Path) -> std::io::Result<()> {
@@ -922,12 +1115,12 @@ fn load_fixture_types(show: &mut Show, dir: &Path) -> HashMap<String, TypeInfo> 
                     for w in warnings {
                         show.msg(Level::Warn, format!("fixtures/{fname}: {w}"));
                     }
-                    map.insert(id, TypeInfo { ft, file: fname, is_qxf: true });
+                    map.insert(id, TypeInfo { ft, file: fname, is_qxf: true, from_library: false });
                 }
                 Err(e) => show.msg(Level::Error, format!("fixtures/{fname}: {e}")),
             }
         } else if let Some(ft) = parse_fixture(show, &id, &fname, &text) {
-            map.insert(id, TypeInfo { ft, file: fname, is_qxf: false });
+            map.insert(id, TypeInfo { ft, file: fname, is_qxf: false, from_library: false });
         }
     }
     map
@@ -1378,7 +1571,7 @@ pub fn file_slug(name: &str) -> String {
     }
 }
 
-pub fn write_patch(dir: &Path, entries: &[PatchEntry]) -> Result<(), String> {
+pub fn write_patch(path: &Path, entries: &[PatchEntry]) -> Result<(), String> {
     let mut out = String::from(t(
         "# Patch-Liste – gespeichert vom DMX-Bridge-Editor (Handbearbeitung weiterhin möglich)\n\
          # Name | Fixture | Universum | Startadresse | [modus=…] [anzahl=n] [abstand=n]\n\n",
@@ -1405,7 +1598,7 @@ pub fn write_patch(dir: &Path, entries: &[PatchEntry]) -> Result<(), String> {
         out.push_str(line.trim_end());
         out.push('\n');
     }
-    write_atomic(&dir.join("patch.txt"), &out)
+    write_atomic(path, &out)
 }
 
 pub fn write_config(dir: &Path, s: &Settings) -> Result<(), String> {
@@ -1585,8 +1778,9 @@ pub enum TileInfo {
 }
 
 /// Window size in layout points (independent of the zoom level)
-pub const DEFAULT_WINDOW: (f32, f32) = (880.0, 600.0);
-pub const MIN_WINDOW: (f32, f32) = (640.0, 400.0);
+pub const DEFAULT_WINDOW: (f32, f32) = (960.0, 620.0);
+/// below this the header row no longer fits next to the wordmark
+pub const MIN_WINDOW: (f32, f32) = (860.0, 440.0);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UiPrefs {

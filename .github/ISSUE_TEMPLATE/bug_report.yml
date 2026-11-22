@@ -1,0 +1,60 @@
+name: Bug report
+description: Something does not work as expected
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Tip: *Settings → About → Report a bug* in the plugin fills in version and system automatically.
+        Deutsch ist auch okay.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, and what went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Load the plugin on a track
+        2. ...
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "windows x86_64 / macos aarch64 / linux x86_64"
+    validations:
+      required: true
+  - type: input
+    id: daw
+    attributes:
+      label: DAW + version
+      placeholder: "Reaper 7.x"
+  - type: dropdown
+    id: format
+    attributes:
+      label: Plugin format
+      options:
+        - CLAP
+        - VST3
+        - Both / not sure
+  - type: textarea
+    id: config
+    attributes:
+      label: Config / logs (optional)
+      description: Relevant parts of config.txt, patch.txt or fixture files, screenshots

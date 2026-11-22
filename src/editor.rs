@@ -474,6 +474,7 @@ fn midi_range_text(show: &Show, f: &PatchedFixture, fmt: NoteFmt) -> String {
 // Header and tabs
 // ---------------------------------------------------------------------------
 
+/// Header: wordmark on the left over all status rows, controls and status to the right
 fn header(
     ui: &mut egui::Ui,
     params: &BridgeParams,
@@ -482,11 +483,28 @@ fn header(
     show: Option<&Show>,
     st: &mut UiState,
 ) {
+    ui.horizontal_top(|ui| {
+        // full wordmark when there is room, otherwise just the mark
+        let r = if ui.available_width() >= 860.0 {
+            image(ui, "lockup", LOCKUP_Z, 58.0)
+        } else {
+            image(ui, "logo", LOGO_Z, 58.0)
+        };
+        let _ = r.on_hover_text(concat!("MIDI ArtNet Bridge v", env!("CARGO_PKG_VERSION")));
+        ui.add_space(14.0);
+        ui.vertical(|ui| header_rows(ui, params, shared, setter, show, st));
+    });
+}
+
+fn header_rows(
+    ui: &mut egui::Ui,
+    params: &BridgeParams,
+    shared: &Shared,
+    setter: &ParamSetter,
+    show: Option<&Show>,
+    st: &mut UiState,
+) {
     ui.horizontal(|ui| {
-        logo(ui, 26.0);
-        ui.heading("DMX Bridge");
-        ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak());
-        ui.add_space(16.0);
         ui.label("Master");
         ui.add(ParamSlider::for_param(&params.master, setter));
         toggle(ui, setter, &params.blackout, "Blackout");
@@ -546,6 +564,8 @@ fn header(
     let errors = shared.send_errors.load(Relaxed);
     ui.horizontal_wrapped(|ui| {
         let rate_col = if st.rate > 0.5 { GREEN } else { YELLOW };
+        ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak());
+        ui.label("·");
         ui.label(tf!("Art-Net an {target}", "Art-Net to {target}"));
         ui.label("·");
         ui.colored_label(rate_col, tf!("{:.0} Pakete/s", "{:.0} packets/s", st.rate));
@@ -2161,7 +2181,7 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
     ui.add_space(6.0);
     section(ui, t("Über", "About"), |ui| {
         ui.horizontal(|ui| {
-            logo(ui, 56.0);
+            image(ui, "logo", LOGO_Z, 56.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new(concat!("MIDI ArtNet Bridge v", env!("CARGO_PKG_VERSION"))).strong());
                 ui.label(RichText::new("MIDI → DMX · Art-Net · CLAP / VST3 · GPL-3.0").weak());
@@ -2215,31 +2235,38 @@ fn donate_buttons(ui: &mut egui::Ui) {
     }
 }
 
-const LOGO_RGBA_Z: &[u8] = include_bytes!("../assets/logo-192.rgba.z");
-const LOGO_PX: usize = 192;
+const LOGO_Z: &[u8] = include_bytes!("../assets/logo.rgba.z");
+const LOCKUP_Z: &[u8] = include_bytes!("../assets/lockup.rgba.z");
 
-/// Logo texture, decoded once and kept in egui's memory
-fn logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
-    let id = egui::Id::new("dmx_bridge_logo");
+/// Embedded image: zlib stream of [width u32 LE, height u32 LE, RGBA bytes].
+/// Decoded once and kept in egui's memory.
+fn texture(ctx: &egui::Context, name: &'static str, data: &[u8]) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new(("dmx_bridge_img", name));
     if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return Some(tex);
     }
-    let rgba = crate::inflate::zlib_decompress(LOGO_RGBA_Z).ok()?;
-    if rgba.len() < LOGO_PX * LOGO_PX * 4 {
+    let raw = crate::inflate::zlib_decompress(data).ok()?;
+    if raw.len() < 8 {
         return None;
     }
-    let img = egui::ColorImage::from_rgba_unmultiplied(
-        [LOGO_PX, LOGO_PX],
-        &rgba[..LOGO_PX * LOGO_PX * 4],
-    );
-    let tex = ctx.load_texture("dmx_bridge_logo", img, egui::TextureOptions::LINEAR);
+    let w = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+    let h = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]) as usize;
+    let px = raw.get(8..8 + w * h * 4)?;
+    let img = egui::ColorImage::from_rgba_unmultiplied([w, h], px);
+    let tex = ctx.load_texture(name, img, egui::TextureOptions::LINEAR);
     ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
     Some(tex)
 }
 
-fn logo(ui: &mut egui::Ui, size: f32) {
-    if let Some(tex) = logo_texture(ui.ctx()) {
-        ui.add(egui::Image::new((tex.id(), egui::vec2(size, size))));
+/// Show an embedded image at the given height (keeps the aspect ratio)
+fn image(ui: &mut egui::Ui, name: &'static str, data: &[u8], height: f32) -> egui::Response {
+    match texture(ui.ctx(), name, data) {
+        Some(tex) => {
+            let [w, h] = tex.size();
+            let size = egui::vec2(height * w as f32 / h.max(1) as f32, height);
+            ui.add(egui::Image::new((tex.id(), size)))
+        }
+        None => ui.label(RichText::new("MIDI ArtNet Bridge").strong()),
     }
 }
 
@@ -2257,17 +2284,12 @@ fn open_url(url: &str) {
 
 /// GitHub "new issue" link with version and system already filled in
 fn bug_report_url() -> String {
-    let body = format!(
-        "**What happened?**\n\n\n**What did you expect?**\n\n\n**Steps to reproduce**\n1. \n\n\
-         ---\nPlugin: MIDI ArtNet Bridge v{}\nSystem: {} {}\nDAW + version: \nPlugin format (CLAP/VST3): \n",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    );
+    // fills the fields of .github/ISSUE_TEMPLATE/bug_report.yml
+    let os = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
     format!(
-        "{REPO_URL}/issues/new?labels=bug&title={}&body={}",
-        url_encode("[Bug] "),
-        url_encode(&body)
+        "{REPO_URL}/issues/new?template=bug_report.yml&version={}&os={}",
+        url_encode(env!("CARGO_PKG_VERSION")),
+        url_encode(&os)
     )
 }
 

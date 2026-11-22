@@ -1,5 +1,5 @@
-# U`King RGBW wall washer, 8-channel mode
-# EXAMPLE – please check against the channel list in the manual!
+# Generic RGBW wall washer (e.g. 9 × 15 W, sold under UKing and other names), 8-channel mode.
+# Please check against the channel list in your manual!
 #
 # channel line:  channel | type | label | rest value (optional)
 # range line (applies to the channel above):
@@ -8,7 +8,7 @@
 # functions:     open · closed · strobe 1-25 (Hz) · random 1-25 · color #ff0000 · off
 #                anything else = free text (e.g. "auto program 1")
 
-name = UKing Wash 8ch
+name = Generic Wall Washer RGBW 8ch
 
 1 | dimmer | Dimmer | 255
 2 | red    | Red

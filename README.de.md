@@ -65,11 +65,11 @@ DMX-Bridge/
 ├── config.txt            Art-Net-IP, Rate, MIDI-Kanal → Universum/Block
 ├── patch.txt             Name | Fixture | Universum | Startadresse
 ├── fixtures/
-│   ├── uking_wash_8ch.txt
-│   ├── par_rgbwauv_8ch.txt
-│   ├── beispiel_movinghead.txt
-│   ├── rgbw_4ch.txt
-│   ├── dimmer_1ch.txt
+│   ├── generic_wall_washer_rgbw.txt
+│   ├── generic_par_rgbwauv.txt
+│   ├── generic_par_rgbw.txt
+│   ├── generic_dimmer.txt
+│   ├── generic_moving_head.txt
 │   └── (deine .qxf aus QLC+)
 └── reaper-notennamen/    (wird per Knopf erzeugt)
 ```
@@ -125,8 +125,8 @@ inkl. Strobe-Hz und Farben. Das alte und das neue QLC+-Format werden erkannt.
 ### Patch
 
 ```
-Washer   | uking_wash_8ch  | 0 | 1
-PAR      | par_rgbwauv_8ch | 0 | 9  | anzahl=12          ← PAR 1 … PAR 12 am Stück
+Washer   | generic_wall_washer_rgbw | 0 | 1
+PAR      | generic_par_rgbwauv      | 0 | 9  | anzahl=12          ← PAR 1 … PAR 12 am Stück
 Washer Q | meine_washer    | 0 | 105 | modus=8 Channel   ← Modus einer .qxf
 ```
 
@@ -166,7 +166,7 @@ wird gezoomt – Schrift, Fader und Abstände bleiben im gleichen Verhältnis. G
 | **Live** | Bühnenansicht, Fader pro Kanal, Konfig-Meldungen |
 | **Patch** | Geräte hinzufügen, entfernen, umsortieren; Fixture, Modus, Universum, Adresse, Anzahl |
 | **Fixtures** | eigene Fixtures anlegen und bearbeiten (Kanäle, Typen, Ruhewerte, Wertebereiche); QLC+-Fixtures als bearbeitbare Kopie |
-| **QLC+ Bibliothek** | alle ~1800 Fixtures aus QLC+, nach Herstellern sortiert und durchsuchbar; Modus wählen, mit einem Klick patchen |
+| **Fixture-Bibliothek** | alle ~1800 Fixtures aus QLC+, nach Herstellern sortiert und durchsuchbar; Modus wählen, mit einem Klick patchen |
 | **Einstellungen** | Node-IP (mit Node-Suche per ArtPoll), Port, Rate, MIDI-Kanal → Universum/Block, Hz/BPM, Konfig-Ordner |
 
 Alles, was du im Plugin speicherst, landet in denselben Textdateien (vorherige Version
@@ -223,6 +223,12 @@ Die Fixture-Definitionen stammen aus dem Projekt [QLC+](https://www.qlcplus.org)
 git clone --depth 1 https://github.com/mcallegari/qlcplus /tmp/qlcplus
 python3 tools/update_library.py /tmp/qlcplus
 ```
+
+## Unterstützen
+
+Bug gefunden? *Einstellungen → Über → Fehler melden* öffnet ein vorausgefülltes GitHub-Formular.
+Wenn dir das Plugin gefällt, kannst du die Entwicklung über **GitHub Sponsors** unterstützen
+(*Einstellungen → Über → Unterstützen*).
 
 ## Lizenz
 

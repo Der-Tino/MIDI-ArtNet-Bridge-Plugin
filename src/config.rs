@@ -33,24 +33,24 @@ const EXAMPLES: &[(&str, &str)] = &[
     ("config.txt", include_str!("../example-config/config.txt")),
     ("patch.txt", include_str!("../example-config/patch.txt")),
     (
-        "fixtures/uking_wash_8ch.txt",
-        include_str!("../example-config/fixtures/uking_wash_8ch.txt"),
+        "fixtures/generic_wall_washer_rgbw.txt",
+        include_str!("../example-config/fixtures/generic_wall_washer_rgbw.txt"),
     ),
     (
-        "fixtures/par_rgbwauv_8ch.txt",
-        include_str!("../example-config/fixtures/par_rgbwauv_8ch.txt"),
+        "fixtures/generic_par_rgbwauv.txt",
+        include_str!("../example-config/fixtures/generic_par_rgbwauv.txt"),
     ),
     (
-        "fixtures/rgbw_4ch.txt",
-        include_str!("../example-config/fixtures/rgbw_4ch.txt"),
+        "fixtures/generic_par_rgbw.txt",
+        include_str!("../example-config/fixtures/generic_par_rgbw.txt"),
     ),
     (
-        "fixtures/dimmer_1ch.txt",
-        include_str!("../example-config/fixtures/dimmer_1ch.txt"),
+        "fixtures/generic_dimmer.txt",
+        include_str!("../example-config/fixtures/generic_dimmer.txt"),
     ),
     (
-        "fixtures/example_movinghead.txt",
-        include_str!("../example-config/fixtures/example_movinghead.txt"),
+        "fixtures/generic_moving_head.txt",
+        include_str!("../example-config/fixtures/generic_moving_head.txt"),
     ),
 ];
 
@@ -721,6 +721,21 @@ pub fn fingerprint(dir: &Path) -> u64 {
         }
     }
     h.finish()
+}
+
+/// Write the generic fixture templates that are missing in fixtures/ (never overwrites).
+/// Returns how many files were created.
+pub fn add_generic_templates(dir: &Path) -> Result<usize, String> {
+    fs::create_dir_all(dir.join("fixtures")).map_err(|e| e.to_string())?;
+    let mut n = 0;
+    for (rel, content) in EXAMPLES.iter().filter(|(rel, _)| rel.starts_with("fixtures/")) {
+        let p = dir.join(rel);
+        if !p.exists() {
+            fs::write(&p, content).map_err(|e| e.to_string())?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 fn write_examples(dir: &Path) -> std::io::Result<()> {

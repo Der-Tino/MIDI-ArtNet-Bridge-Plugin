@@ -624,8 +624,8 @@ fn tab_bar(ui: &mut egui::Ui, st: &mut UiState) {
     let tabs = [
         (Tab::Live, "Live", false),
         (Tab::Patch, "Patch", patch_dirty),
-        (Tab::Fixtures, "Fixtures", fx_dirty),
-        (Tab::Library, t("QLC+ Bibliothek", "QLC+ library"), false),
+        (Tab::Fixtures, t("Eigene Fixtures", "Custom Fixtures"), fx_dirty),
+        (Tab::Library, t("Fixture-Bibliothek", "Fixture Library"), false),
         (Tab::Settings, t("Einstellungen", "Settings"), settings_dirty),
     ];
     ui.horizontal_wrapped(|ui| {
@@ -666,8 +666,8 @@ fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32, st: &m
 
     if show.fixtures.is_empty() {
         ui.label(t(
-            "Keine Geräte gepatcht – im Tab „Patch“ oder „QLC+ Bibliothek“ hinzufügen.",
-            "No devices patched – add some in the “Patch” or “QLC+ library” tab.",
+            "Keine Geräte gepatcht – im Tab „Patch“ oder „Fixture-Bibliothek“ hinzufügen.",
+            "No devices patched – add some in the “Patch” or “Fixture Library” tab.",
         ));
         return;
     }
@@ -986,8 +986,8 @@ fn patch_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiState) 
     info_line(ui, st);
     ui.label(
         RichText::new(t(
-            "Neue Gerätetypen findest du im Tab „QLC+ Bibliothek“ oder legst sie unter „Fixtures“ an.",
-            "New device types: see the “QLC+ library” tab or create them under “Fixtures”.",
+            "Neue Gerätetypen findest du im Tab „Fixture-Bibliothek“ oder legst sie unter „Eigene Fixtures“ an.",
+            "New device types: see the “Fixture Library” tab or create them under “Custom Fixtures”.",
         ))
         .weak()
         .small(),
@@ -1212,6 +1212,23 @@ fn fixtures_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, st: &mut UiStat
                 });
                 st.fx_sel = Some(id);
                 st.new_fx_name.clear();
+            }
+            ui.separator();
+            if ui
+                .button(t("Generic-Vorlagen hinzufügen", "Add generic templates"))
+                .on_hover_text(t(
+                    "Legt fehlende Vorlagen (Generic Dimmer, PAR, Wall Washer, Moving Head) in fixtures/ an – \
+                     überschreibt nichts.",
+                    "Creates missing templates (generic dimmer, PAR, wall washer, moving head) in fixtures/ – \
+                     never overwrites anything.",
+                ))
+                .clicked()
+            {
+                let r = config::add_generic_templates(&show.dir).map(|n| match n {
+                    0 => t("Alle Vorlagen sind schon vorhanden.", "All templates already exist.").to_string(),
+                    n => tf!("{n} Vorlage(n) angelegt.", "{n} template(s) created."),
+                });
+                report(st, shared, r);
             }
         });
         info_line(ui, st);
@@ -1694,6 +1711,15 @@ fn library_detail(
 
     ui.label(RichText::new(format!("{} {}", e.manufacturer.replace('_', " "), e.model)).heading());
     ui.label(RichText::new(tf!("{} · {} Modi", "{} · {} modes", e.kind, ft.modes.len())).weak());
+    ui.label(
+        RichText::new(if e.custom {
+            t("Quelle: eigene Definition (MIDI ArtNet Bridge)", "Source: own definition (MIDI ArtNet Bridge)")
+        } else {
+            t("Quelle: QLC+ Fixture-Bibliothek", "Source: QLC+ fixture library")
+        })
+        .small()
+        .weak(),
+    );
     ui.add_space(4.0);
     ui.label(t("Modus:", "Mode:"));
     for (mi, m) in ft.modes.iter().enumerate() {
@@ -1804,8 +1830,8 @@ fn attribution(ui: &mut egui::Ui) {
     ui.add_space(8.0);
     ui.label(
         RichText::new(tf!(
-            "Fixture-Daten: QLC+ (qlcplus.org), Apache License 2.0 · {}",
-            "Fixture data: QLC+ (qlcplus.org), Apache License 2.0 · {}",
+            "Fixture-Bibliothek: größtenteils aus QLC+ (qlcplus.org, Apache License 2.0), ergänzt um eigene Einträge · {}",
+            "Fixture library: mostly from QLC+ (qlcplus.org, Apache License 2.0), plus own entries · {}",
             library::VERSION.lines().next().unwrap_or("")
         ))
         .weak()
@@ -2125,7 +2151,81 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
     info_line(ui, st);
 
     ui.add_space(6.0);
-    attribution(ui);
+    section(ui, t("Über", "About"), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(concat!("MIDI ArtNet Bridge v", env!("CARGO_PKG_VERSION"))).strong());
+            ui.label(RichText::new("· GPL-3.0").weak());
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button(t("Projekt auf GitHub", "Project on GitHub"))
+                .on_hover_text(REPO_URL)
+                .clicked()
+            {
+                open_url(REPO_URL);
+            }
+            if ui
+                .button(t("Fehler melden", "Report a bug"))
+                .on_hover_text(t(
+                    "Öffnet ein vorausgefülltes Formular auf GitHub (Version und System sind schon eingetragen).",
+                    "Opens a pre-filled form on GitHub (version and system already filled in).",
+                ))
+                .clicked()
+            {
+                open_url(&bug_report_url());
+            }
+            if ui
+                .button(t("♥ Unterstützen", "♥ Support / donate"))
+                .on_hover_text(SPONSOR_URL)
+                .clicked()
+            {
+                open_url(SPONSOR_URL);
+            }
+        });
+        attribution(ui);
+    });
+}
+
+const REPO_URL: &str = "https://github.com/Der-Tino/MIDI-ArtNet-Bridge-Plugin";
+const SPONSOR_URL: &str = "https://github.com/sponsors/Der-Tino";
+
+/// Open a web address in the default browser
+fn open_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+/// GitHub "new issue" link with version and system already filled in
+fn bug_report_url() -> String {
+    let body = format!(
+        "**What happened?**\n\n\n**What did you expect?**\n\n\n**Steps to reproduce**\n1. \n\n\
+         ---\nPlugin: MIDI ArtNet Bridge v{}\nSystem: {} {}\nDAW + version: \nPlugin format (CLAP/VST3): \n",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    format!(
+        "{REPO_URL}/issues/new?labels=bug&title={}&body={}",
+        url_encode("[Bug] "),
+        url_encode(&body)
+    )
+}
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Own IP, subnet check and ArtPoll node search

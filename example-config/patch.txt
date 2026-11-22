@@ -8,4 +8,4 @@
 #   | count=8            8 identical devices in a row → "PAR 1" … "PAR 8"
 #   | spacing=10         address step between them (default: channel count)
 
-Washer | uking_wash_8ch | 0 | 1
+Wall Washer | generic_wall_washer_rgbw | 0 | 1

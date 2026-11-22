@@ -9,7 +9,7 @@ cable, no background script.
 - MIDI channel → DMX universe + block, 16 channels = 4 full universes
 - Note = DMX channel, velocity = value; CC lanes for fades
 - Fixtures as simple text files or directly as QLC+ `.qxf` files
-- Built-in **QLC+ fixture library** (~1800 fixtures), searchable by manufacturer
+- Built-in **fixture library** (~1800 fixtures, mostly from QLC+), searchable by manufacturer
 - Patch and fixture editor, live stage preview incl. strobe, faders per channel
 - Art-Net node discovery (ArtPoll), master/blackout as automatable parameters
 
@@ -59,8 +59,8 @@ Default mapping (freely configurable):
 ## Configuration folder
 
 On first start the plugin creates `Documents/DMX-Bridge/` with example files. Everything
-can be edited inside the plugin (tabs *Patch*, *Fixtures*, *QLC+ Bibliothek*,
-*Einstellungen*) or by hand in any text editor – **saved changes are picked up
+can be edited inside the plugin (tabs *Patch*, *Custom Fixtures*, *Fixture Library*,
+*Settings*) or by hand in any text editor – **saved changes are picked up
 automatically** within about a second. To move your setup to another computer, copy
 the whole folder.
 
@@ -85,7 +85,7 @@ midi2       = 0 2
 midi3       = off
 ```
 
-The target IP is the **node's** IP, not your computer's. The *Einstellungen* tab shows
+The target IP is the **node's** IP, not your computer's. The *Settings* tab shows
 which IP your computer sends from, warns if the node is in a different subnet, and can
 search the network for nodes.
 
@@ -135,8 +135,8 @@ default values and capabilities (incl. strobe Hz and colours) are imported.
 ### patch.txt
 
 ```
-Washer | uking_wash_8ch  | 0 | 1
-PAR    | par_rgbwauv_8ch | 0 | 9   | count=12          ← PAR 1 … PAR 12 in a row
+Washer | generic_wall_washer_rgbw | 0 | 1
+PAR    | generic_par_rgbwauv      | 0 | 9   | count=12          ← PAR 1 … PAR 12 in a row
 Spot   | my_spot         | 0 | 105 | mode=8 Channel    ← mode of a .qxf fixture
 ```
 
@@ -153,7 +153,7 @@ default = channel count).
    start playback in the middle of a long note.
 4. If you cannot type into text or number fields: in the FX window enable
    **“Send all keyboard input to plugin”**.
-5. *Einstellungen → Reaper-Notennamen exportieren* writes note-name files; load them in
+5. *Settings → Export Reaper note names* writes note-name files; load them in
    the MIDI editor (*File → Note names → Load note names from file*) to see
    “Washer: Red” instead of “C#-1”.
 
@@ -195,6 +195,12 @@ cargo xtask bundle-universal dmx_bridge --release
 Output: `target/bundled/`. GitHub Actions builds Windows, macOS and Linux on every push;
 *Actions → Build → Run workflow* with a release tag (e.g. `v0.5.0`) creates a release.
 
+## Support the project
+
+Found a bug? *Settings → About → Report a bug* opens a pre-filled GitHub issue.
+If you like the plugin, you can support its development via **GitHub Sponsors**
+(*Settings → About → Support*).
+
 ## License
 
 MIDI ArtNet Bridge – Copyright (C) 2026 Der-Tino and contributors
@@ -213,6 +219,7 @@ it – modified or not – must do so under the same license and include the sou
 | Component | License | Notes |
 |---|---|---|
 | [QLC+](https://www.qlcplus.org) fixture definitions | Apache 2.0 | `library/` – embedded, unmodified; update with `tools/update_library.py` |
+| Own fixture definitions | GPL-3.0-or-later | `library/custom/` – e.g. a 9 × 15 W RGBW wall washer |
 | [NIH-plug](https://github.com/robbert-vdh/nih-plug) | ISC | plugin framework |
 | [vst3-sys](https://github.com/RustAudio/vst3-sys) | GPLv3 | VST3 bindings used for the VST3 build |
 | `vendor/nih_plug_egui` | ISC | modified copy, see `VENDORED.md` |

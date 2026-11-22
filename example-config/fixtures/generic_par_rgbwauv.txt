@@ -1,7 +1,7 @@
 # Typical LED PAR RGBWA+UV, 8 channels
 # Strobe 1–25 Hz according to the data sheet. Check the threshold (here 10) on the device!
 
-name = PAR RGBWAUV 8ch
+name = Generic PAR RGBWA+UV 8ch
 
 1 | dimmer | Dimmer | 255
 2 | red    | Red

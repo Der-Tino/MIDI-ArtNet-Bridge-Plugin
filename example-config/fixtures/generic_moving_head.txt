@@ -1,7 +1,7 @@
-# Example for "everything else": moving head with colour wheel, gobo, prism …
-# Template only – not patched.
+# Generic moving head: colour wheel, gobo, prism … – template showing what is possible.
+# Not patched; adapt it to your device or delete it.
 
-name = Example moving head 12ch
+name = Generic Moving Head 12ch
 
 1  | pan            | Pan        | 128
 2  | pan_fine       | Pan fine

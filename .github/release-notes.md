@@ -1,7 +1,7 @@
 MIDI notes in your DAW → DMX over Art-Net, as a CLAP/VST3 plugin.
 *(Deutsch: siehe README.de.md im Repository.)*
 
-> ⚠️ Pre-releases (alpha/beta) are not tested live yet – test thoroughly before a gig.
+> ⚠️ As with any live tool: run your show once before the gig.
 
 ### Downloads
 | System | File |

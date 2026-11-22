@@ -5,6 +5,8 @@
 
 *[Deutsche Version](README.de.md)*
 
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Der-Tino) [![Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/dertino)
+
 Program your light show as MIDI notes in your DAW (built and tested for **Reaper**) –
 the plugin sends the values straight out as **Art-Net**. No QLC+, no virtual MIDI
 cable, no background script.
@@ -16,7 +18,7 @@ cable, no background script.
 - Patch and fixture editor, live stage preview incl. strobe, faders per channel
 - Art-Net node discovery (ArtPoll), master/blackout as automatable parameters
 
-> **Status: alpha.** The user interface is available in English and German (defaults to your system language, switch top right).
+> **Version 1.0.** The user interface is available in English and German (defaults to your system language, switch top right).
 
 ## Download
 
@@ -196,13 +198,14 @@ cargo xtask bundle-universal dmx_bridge --release
 ```
 
 Output: `target/bundled/`. GitHub Actions builds Windows, macOS and Linux on every push;
-*Actions → Build → Run workflow* with a release tag (e.g. `v0.5.0`) creates a release.
+*Actions → Build → Run workflow* with a release tag (e.g. `v1.0.0`) creates a release.
 
 ## Support the project
 
 Found a bug? *Settings → About → Report a bug* opens a pre-filled GitHub issue.
-If you like the plugin, you can support its development via **GitHub Sponsors**
-(*Settings → About → Support*).
+If you like the plugin, you can support its development via
+[**GitHub Sponsors**](https://github.com/sponsors/Der-Tino) or [**Ko-fi**](https://ko-fi.com/dertino)
+(no GitHub account needed) – also reachable via the ♥ button at the top right of the plugin.
 
 ## License
 

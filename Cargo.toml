@@ -1,6 +1,6 @@
 [package]
 name = "dmx_bridge"
-version = "0.8.0"
+version = "1.0.0"
 edition = "2021"
 description = "MIDI notes → DMX over Art-Net, as a CLAP/VST3 plugin"
 license = "GPL-3.0-or-later"

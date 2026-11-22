@@ -483,6 +483,7 @@ fn header(
     st: &mut UiState,
 ) {
     ui.horizontal(|ui| {
+        logo(ui, 26.0);
         ui.heading("DMX Bridge");
         ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).weak());
         ui.add_space(16.0);
@@ -525,6 +526,13 @@ fn header(
                 // reload so that config messages appear in the new language
                 shared.reload_request.store(true, Relaxed);
             }
+
+            ui.add_space(8.0);
+            ui.menu_button(RichText::new("♥").color(YELLOW), |ui| {
+                donate_buttons(ui);
+            })
+            .response
+            .on_hover_text(t("Projekt unterstützen", "Support the project"));
         });
     });
 
@@ -2152,9 +2160,12 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
 
     ui.add_space(6.0);
     section(ui, t("Über", "About"), |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(concat!("MIDI ArtNet Bridge v", env!("CARGO_PKG_VERSION"))).strong());
-            ui.label(RichText::new("· GPL-3.0").weak());
+        ui.horizontal(|ui| {
+            logo(ui, 56.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(concat!("MIDI ArtNet Bridge v", env!("CARGO_PKG_VERSION"))).strong());
+                ui.label(RichText::new("MIDI → DMX · Art-Net · CLAP / VST3 · GPL-3.0").weak());
+            });
         });
         ui.horizontal_wrapped(|ui| {
             if ui
@@ -2174,13 +2185,7 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
             {
                 open_url(&bug_report_url());
             }
-            if ui
-                .button(t("♥ Unterstützen", "♥ Support / donate"))
-                .on_hover_text(SPONSOR_URL)
-                .clicked()
-            {
-                open_url(SPONSOR_URL);
-            }
+            donate_buttons(ui);
         });
         attribution(ui);
     });
@@ -2188,6 +2193,55 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
 
 const REPO_URL: &str = "https://github.com/Der-Tino/MIDI-ArtNet-Bridge-Plugin";
 const SPONSOR_URL: &str = "https://github.com/sponsors/Der-Tino";
+const KOFI_URL: &str = "https://ko-fi.com/dertino";
+
+/// Donation links (same targets as .github/FUNDING.yml)
+fn donate_buttons(ui: &mut egui::Ui) {
+    if ui
+        .button(t("♥ GitHub Sponsors", "♥ GitHub Sponsors"))
+        .on_hover_text(SPONSOR_URL)
+        .clicked()
+    {
+        open_url(SPONSOR_URL);
+        ui.close_menu();
+    }
+    if ui
+        .button(t("♥ Ko-fi (ohne GitHub-Konto)", "♥ Ko-fi (no GitHub account needed)"))
+        .on_hover_text(KOFI_URL)
+        .clicked()
+    {
+        open_url(KOFI_URL);
+        ui.close_menu();
+    }
+}
+
+const LOGO_RGBA_Z: &[u8] = include_bytes!("../assets/logo-192.rgba.z");
+const LOGO_PX: usize = 192;
+
+/// Logo texture, decoded once and kept in egui's memory
+fn logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new("dmx_bridge_logo");
+    if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return Some(tex);
+    }
+    let rgba = crate::inflate::zlib_decompress(LOGO_RGBA_Z).ok()?;
+    if rgba.len() < LOGO_PX * LOGO_PX * 4 {
+        return None;
+    }
+    let img = egui::ColorImage::from_rgba_unmultiplied(
+        [LOGO_PX, LOGO_PX],
+        &rgba[..LOGO_PX * LOGO_PX * 4],
+    );
+    let tex = ctx.load_texture("dmx_bridge_logo", img, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    Some(tex)
+}
+
+fn logo(ui: &mut egui::Ui, size: f32) {
+    if let Some(tex) = logo_texture(ui.ctx()) {
+        ui.add(egui::Image::new((tex.id(), egui::vec2(size, size))));
+    }
+}
 
 /// Open a web address in the default browser
 fn open_url(url: &str) {

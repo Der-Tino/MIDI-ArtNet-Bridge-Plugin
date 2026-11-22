@@ -1,6 +1,10 @@
+<img width="2400" height="800" alt="A · Wordmark dark@2x" src="https://github.com/user-attachments/assets/d0d78ad8-5b78-4847-9c66-7ca03c8562fc" />
+
 # MIDI ArtNet Bridge – MIDI → Art-Net als CLAP/VST3
 
 *[English version](README.md)*
+
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Der-Tino) [![Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/dertino)
 
 Licht als MIDI-Noten in Reaper, das Plugin schickt die Werte direkt als Art-Net raus.
 Kein QLC+, kein virtuelles MIDI-Kabel, kein Hintergrund-Skript.
@@ -227,8 +231,9 @@ python3 tools/update_library.py /tmp/qlcplus
 ## Unterstützen
 
 Bug gefunden? *Einstellungen → Über → Fehler melden* öffnet ein vorausgefülltes GitHub-Formular.
-Wenn dir das Plugin gefällt, kannst du die Entwicklung über **GitHub Sponsors** unterstützen
-(*Einstellungen → Über → Unterstützen*).
+Wenn dir das Plugin gefällt, kannst du die Entwicklung über
+[**GitHub Sponsors**](https://github.com/sponsors/Der-Tino) oder [**Ko-fi**](https://ko-fi.com/dertino)
+(ohne GitHub-Konto) unterstützen – auch über den ♥-Knopf oben rechts im Plugin.
 
 ## Lizenz
 

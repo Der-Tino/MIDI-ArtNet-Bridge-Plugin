@@ -19,11 +19,22 @@ use crate::qxf;
 use crate::shared::{self, Shared, MAX_BUFS};
 use crate::BridgeParams;
 
-/// Fenstergröße bei 100 % (logische Pixel)
-pub const BASE_W: f32 = 1000.0;
-pub const BASE_H: f32 = 700.0;
-/// egui-Standardschrift ist recht klein – 100 % entspricht 125 % davon
-const BASE_FONT: f32 = 1.25;
+/// Layout-Fläche in Punkten – bleibt bei jeder Größe gleich, nur der Zoom ändert sich
+pub const BASE_W: f32 = 880.0;
+pub const BASE_H: f32 = 600.0;
+/// egui ist von Haus aus klein – „100 %“ entspricht Zoom 1,25
+pub const ZOOM_BASE: f32 = 1.25;
+
+/// Zoom für eine Größenstufe (0.5 … 2.0)
+pub fn zoom_for(scale: f32) -> f32 {
+    scale * ZOOM_BASE
+}
+
+/// Fenstergröße (logische Pixel) für eine Größenstufe
+pub fn window_size_for(scale: f32) -> (u32, u32) {
+    let z = zoom_for(scale);
+    ((BASE_W * z).round() as u32, (BASE_H * z).round() as u32)
+}
 
 const RED: Color32 = Color32::from_rgb(235, 90, 80);
 const YELLOW: Color32 = Color32::from_rgb(235, 195, 70);
@@ -65,7 +76,6 @@ struct UiState {
     initialized: bool,
     info: Option<(bool, String)>,
     dir_edit: String,
-    applied_scale: f32,
 
     rate_t: f64,
     rate_pkts: u64,
@@ -137,11 +147,6 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
             }
 
             st.bpm = st.prefs.bpm;
-            let font_scale = st.prefs.scale * BASE_FONT;
-            if (font_scale - st.applied_scale).abs() > 0.001 {
-                apply_scale(ctx, font_scale);
-                st.applied_scale = font_scale;
-            }
             let show: Option<Arc<Show>> = shared.show.lock().ok().and_then(|g| g.clone());
             if let Some(s) = &show {
                 sync_with_show(st, s);
@@ -181,29 +186,6 @@ pub fn create(params: Arc<BridgeParams>, shared: Arc<Shared>) -> Option<Box<dyn 
 // ---------------------------------------------------------------------------
 // Allgemein
 // ---------------------------------------------------------------------------
-
-fn apply_scale(ctx: &egui::Context, scale: f32) {
-    let base = egui::Style::default();
-    let mut st = (*ctx.style()).clone();
-    for (ts, font) in st.text_styles.iter_mut() {
-        if let Some(b) = base.text_styles.get(ts) {
-            font.size = b.size * scale;
-        }
-    }
-    let b = &base.spacing;
-    let s = &mut st.spacing;
-    s.item_spacing = b.item_spacing * scale;
-    s.button_padding = b.button_padding * scale;
-    s.interact_size = b.interact_size * scale;
-    s.slider_width = b.slider_width * scale;
-    s.icon_width = b.icon_width * scale;
-    s.icon_width_inner = b.icon_width_inner * scale;
-    s.icon_spacing = b.icon_spacing * scale;
-    s.indent = b.indent * scale;
-    s.combo_width = b.combo_width * scale;
-    s.text_edit_width = b.text_edit_width * scale;
-    ctx.set_style(st);
-}
 
 /// Neue Konfiguration geladen → Arbeitskopien ohne ungespeicherte
 /// Änderungen aktualisieren.
@@ -319,7 +301,8 @@ fn open_path(p: &Path) {
 }
 
 fn request_window(params: &BridgeParams, scale: f32) {
-    let want = ((BASE_W * scale).round() as u32, (BASE_H * scale).round() as u32);
+    nih_plug_egui::set_ui_zoom(zoom_for(scale));
+    let want = window_size_for(scale);
     if params.editor_state.size() != want {
         params.editor_state.set_requested_size(want);
     }
@@ -482,7 +465,7 @@ fn live_tab(ui: &mut egui::Ui, show: &Show, shared: &Shared, master: f32, st: &m
         return;
     }
     let t = ui.input(|i| i.time);
-    let scale = ui.style().spacing.interact_size.y / 18.0;
+    let scale = 1.0;
 
     let all_vals: Vec<Vec<u8>> = show
         .fixtures
@@ -1598,7 +1581,7 @@ fn settings_tab(ui: &mut egui::Ui, show: &Show, params: &BridgeParams, shared: &
         ui.label(RichText::new("(1 Hz = 60 BPM; Dateien speichern immer Hz)").weak().small());
     });
     ui.label(
-        RichText::new("Größe: oben rechts (50–200 %). Gilt wie Hz/BPM für alle Projekte (oberflaeche.txt).")
+        RichText::new("Größe: oben rechts (50–200 %), zoomt die komplette Oberfläche. Gilt wie Hz/BPM für alle Projekte (oberflaeche.txt).")
             .weak()
             .small(),
     );

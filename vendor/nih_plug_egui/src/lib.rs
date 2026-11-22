@@ -19,6 +19,7 @@ compile_error!("There's currently no software rendering support for egui");
 
 /// Re-export for convenience.
 pub use egui_baseview::egui;
+pub use egui_baseview::{set_ui_zoom, ui_zoom};
 
 mod editor;
 pub mod resizable_window;
@@ -113,6 +114,11 @@ impl EguiState {
     }
 
     /// Set the new size that will be used to resize the window if the host allows.
+    /// Gespeicherte Fenstergröße setzen (gilt beim nächsten Öffnen).
+    pub fn set_size(&self, new_size: (u32, u32)) {
+        self.size.store(new_size);
+    }
+
     pub fn set_requested_size(&self, new_size: (u32, u32)) {
         self.requested_size.store(Some(new_size));
     }

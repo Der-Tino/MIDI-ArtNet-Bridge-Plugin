@@ -52,7 +52,10 @@ pub struct BridgeParams {
 impl Default for BridgeParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(editor::BASE_W as u32, editor::BASE_H as u32),
+            editor_state: {
+                let (w, h) = editor::window_size_for(1.0);
+                EguiState::from_size(w, h)
+            },
             config_dir: RwLock::new(String::new()),
             master: FloatParam::new("Master", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_unit("%")
@@ -100,6 +103,13 @@ impl Plugin for DmxBridge {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        // Größe (Zoom) aus oberflaeche.txt schon vor dem ersten Öffnen setzen,
+        // damit das Fenster direkt in der richtigen Größe aufgeht.
+        let prefs = config::read_ui_prefs(&artnet::effective_dir(&self.params));
+        nih_plug_egui::set_ui_zoom(editor::zoom_for(prefs.scale));
+        self.params
+            .editor_state
+            .set_size(editor::window_size_for(prefs.scale));
         editor::create(self.params.clone(), self.shared.clone())
     }
 

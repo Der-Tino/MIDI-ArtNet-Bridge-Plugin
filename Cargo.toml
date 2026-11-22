@@ -1,6 +1,6 @@
 [package]
 name = "dmx_bridge"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "MIDI-Noten → DMX über Art-Net, als CLAP/VST3 für Reaper"
 

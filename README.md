@@ -145,8 +145,8 @@ gelb/rot an. Es stürzt deswegen nicht ab, und die restliche Konfiguration läuf
 
 ## GUI
 
-Die Größe des ganzen Fensters wählst du oben rechts (50, 75, 100, 125, 150, 200 %) –
-alles skaliert gleichmäßig mit. Größe und Hz/BPM gelten für alle Projekte
+Die Größe wählst du oben rechts (50, 75, 100, 125, 150, 200 %). Die komplette Oberfläche
+wird gezoomt – Schrift, Fader und Abstände bleiben im gleichen Verhältnis. Größe und Hz/BPM gelten für alle Projekte
 (`oberflaeche.txt` im Konfig-Ordner).
 
 > **Tippen in Eingabefelder geht nicht?** Reaper gibt die Tastatur sonst nicht an das

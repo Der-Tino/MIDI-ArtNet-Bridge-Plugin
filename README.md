@@ -1,4 +1,5 @@
-<img width="2400" height="800" alt="A · Wordmark dark@2x" src="https://github.com/user-attachments/assets/ccf2f558-7e5b-4b03-b92d-7ded7a66f173" />
+<img width="2400" height="800" alt="A · Wordmark dark@2x" src="https://github.com/user-attachments/assets/d0d78ad8-5b78-4847-9c66-7ca03c8562fc" />
+
 
 # MIDI ArtNet Bridge – MIDI → Art-Net as a CLAP/VST3 plugin
 

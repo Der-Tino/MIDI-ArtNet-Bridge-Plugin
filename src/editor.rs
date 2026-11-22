@@ -2289,9 +2289,16 @@ const LOGO_Z: &[u8] = include_bytes!("../assets/logo.rgba.z");
 const LOCKUP_Z: &[u8] = include_bytes!("../assets/lockup.rgba.z");
 
 /// Embedded image: zlib stream of [width u32 LE, height u32 LE, RGBA bytes].
-/// Decoded once and kept in egui's memory.
-fn texture(ctx: &egui::Context, name: &'static str, data: &[u8]) -> Option<egui::TextureHandle> {
-    let id = egui::Id::new(("dmx_bridge_img", name));
+/// The image is scaled on the CPU to the exact pixel size it is shown at
+/// (area averaging, premultiplied alpha), so it stays smooth at every UI
+/// size; the GPU would only sample a few source pixels and look jagged.
+fn texture(
+    ctx: &egui::Context,
+    name: &'static str,
+    data: &[u8],
+    target_h: usize,
+) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new(("dmx_bridge_img", name, target_h));
     if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return Some(tex);
     }
@@ -2302,18 +2309,96 @@ fn texture(ctx: &egui::Context, name: &'static str, data: &[u8]) -> Option<egui:
     let w = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
     let h = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]) as usize;
     let px = raw.get(8..8 + w * h * 4)?;
-    let img = egui::ColorImage::from_rgba_unmultiplied([w, h], px);
-    let tex = ctx.load_texture(name, img, egui::TextureOptions::LINEAR);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let th = target_h.clamp(1, 4096);
+    let tw = ((w as f32 * th as f32 / h as f32).round() as usize).max(1);
+    let out = resample_premultiplied(px, w, h, tw, th);
+    let img = egui::ColorImage::from_rgba_premultiplied([tw, th], &out);
+    let tex = ctx.load_texture(format!("{name}_{th}"), img, egui::TextureOptions::LINEAR);
     ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
     Some(tex)
 }
 
-/// Show an embedded image at the given height (keeps the aspect ratio)
+/// Area-averaging resize (box filter with fractional coverage), RGBA in,
+/// premultiplied RGBA out
+fn resample_premultiplied(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
+    // premultiply into f32
+    let mut pm = vec![0f32; sw * sh * 4];
+    for i in 0..sw * sh {
+        let a = src[i * 4 + 3] as f32 / 255.0;
+        pm[i * 4] = src[i * 4] as f32 * a;
+        pm[i * 4 + 1] = src[i * 4 + 1] as f32 * a;
+        pm[i * 4 + 2] = src[i * 4 + 2] as f32 * a;
+        pm[i * 4 + 3] = src[i * 4 + 3] as f32;
+    }
+    // weights of source cells for each destination cell along one axis
+    fn spans(s: usize, d: usize) -> Vec<Vec<(usize, f32)>> {
+        let scale = s as f32 / d as f32;
+        (0..d)
+            .map(|i| {
+                let x0 = i as f32 * scale;
+                let x1 = ((i + 1) as f32 * scale).max(x0 + 1e-3);
+                let mut v = Vec::new();
+                let mut sx = x0.floor() as usize;
+                while (sx as f32) < x1 && sx < s {
+                    let wgt = (x1.min(sx as f32 + 1.0) - x0.max(sx as f32)).max(0.0);
+                    if wgt > 0.0 {
+                        v.push((sx, wgt));
+                    }
+                    sx += 1;
+                }
+                let sum: f32 = v.iter().map(|(_, w)| w).sum();
+                if sum > 0.0 {
+                    for e in v.iter_mut() {
+                        e.1 /= sum;
+                    }
+                } else {
+                    v.push(((x0 as usize).min(s - 1), 1.0));
+                }
+                v
+            })
+            .collect()
+    }
+    let hs = spans(sw, dw);
+    let vs = spans(sh, dh);
+    // horizontal pass
+    let mut tmp = vec![0f32; dw * sh * 4];
+    for y in 0..sh {
+        for (dx, span) in hs.iter().enumerate() {
+            for &(sx, wgt) in span {
+                for c in 0..4 {
+                    tmp[(y * dw + dx) * 4 + c] += pm[(y * sw + sx) * 4 + c] * wgt;
+                }
+            }
+        }
+    }
+    // vertical pass
+    let mut out = vec![0u8; dw * dh * 4];
+    for (dy, span) in vs.iter().enumerate() {
+        for dx in 0..dw {
+            for c in 0..4 {
+                let mut acc = 0f32;
+                for &(sy, wgt) in span {
+                    acc += tmp[(sy * dw + dx) * 4 + c] * wgt;
+                }
+                out[(dy * dw + dx) * 4 + c] = acc.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// Show an embedded image at the given height in points (keeps the aspect ratio)
 fn image(ui: &mut egui::Ui, name: &'static str, data: &[u8], height: f32) -> egui::Response {
-    match texture(ui.ctx(), name, data) {
+    let ppp = ui.ctx().pixels_per_point();
+    let target_h = (height * ppp).round().max(1.0) as usize;
+    match texture(ui.ctx(), name, data, target_h) {
         Some(tex) => {
             let [w, h] = tex.size();
-            let size = egui::vec2(height * w as f32 / h.max(1) as f32, height);
+            // exactly one texture pixel per screen pixel
+            let size = egui::vec2(w as f32 / ppp, h as f32 / ppp);
             ui.add(egui::Image::new((tex.id(), size)))
         }
         None => ui.label(RichText::new("MIDI ArtNet Bridge").strong()),

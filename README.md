@@ -1,208 +1,198 @@
-# DMX Bridge v0.4 – MIDI → Art-Net als CLAP/VST3
+# MIDI ArtNet Bridge – MIDI → Art-Net as a CLAP/VST3 plugin
 
-Licht als MIDI-Noten in Reaper, das Plugin schickt die Werte direkt als Art-Net raus.
-Kein QLC+, kein virtuelles MIDI-Kabel, kein Hintergrund-Skript.
+*[Deutsche Version](README.de.md)*
 
-## Bauen
+Program your light show as MIDI notes in your DAW (built and tested for **Reaper**) –
+the plugin sends the values straight out as **Art-Net**. No QLC+, no virtual MIDI
+cable, no background script.
 
-```bash
-# einmalig: Rust installieren (https://rustup.rs)
-cargo xtask bundle dmx_bridge --release
-# Mac (Intel + Apple Silicon in einer Datei):
-cargo xtask bundle-universal dmx_bridge --release
-```
+- MIDI channel → DMX universe + block, 16 channels = 4 full universes
+- Note = DMX channel, velocity = value; CC lanes for fades
+- Fixtures as simple text files or directly as QLC+ `.qxf` files
+- Built-in **QLC+ fixture library** (~1800 fixtures), searchable by manufacturer
+- Patch and fixture editor, live stage preview incl. strobe, faders per channel
+- Art-Net node discovery (ArtPoll), master/blackout as automatable parameters
 
-Ergebnis in `target/bundled/`: `DMX Bridge.clap` und `DMX Bridge.vst3`.
+> **Status: alpha.** The user interface is currently in German; an English UI is planned.
 
-| System  | CLAP-Ordner                                  |
+## Download
+
+Ready-to-use plugins for Windows, macOS (Intel + Apple Silicon) and Linux are on the
+**Releases** page. Unzip and copy `DMX Bridge.clap` into your CLAP folder:
+
+| System  | CLAP folder                                  |
 |---------|----------------------------------------------|
 | Windows | `C:\Program Files\Common Files\CLAP\`        |
 | macOS   | `~/Library/Audio/Plug-Ins/CLAP/`             |
+| Linux   | `~/.clap/`                                   |
 
-Nimm in Reaper die **CLAP**-Version (MIDI-CCs kommen dort zuverlässiger an als bei VST3).
+On macOS, remove the quarantine flag once (the plugin is not signed):
 
-## Das Prinzip
-
-```
-MIDI-Kanal  →  Universum + Block   (in config.txt, wie die Input-Blocks am X32)
-Note 0–127  →  Slot im Block       (Note 0 = erster Kanal des Blocks)
-Velocity    →  DMX-Wert            (1–127 → 2–255, 127 = voll)
-Note-Off    →  Ruhewert            (aus der Fixture-Datei, Standard 0)
-CC 0–119    →  gleicher Slot wie die Note, Wert bleibt stehen → für Fades
-Poly-AT     →  ändert den Wert einer gehaltenen Note
+```bash
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/"DMX Bridge.clap"
 ```
 
-Standard-Zuordnung (frei änderbar):
+Prefer the **CLAP** version in Reaper (MIDI CCs arrive more reliably than with VST3).
 
-| MIDI-Kanal | Universum | Block | DMX      |
-|-----------:|----------:|------:|----------|
-| 1          | 0         | 1     | 1–128    |
-| 2          | 0         | 2     | 129–256  |
-| 3          | 0         | 3     | 257–384  |
-| 4          | 0         | 4     | 385–512  |
-| 5–8        | 1         | 1–4   | wie oben |
-| 9–16       | aus       |       |          |
+## How it works
 
-16 MIDI-Kanäle × 128 Noten = 2048 Slots = 4 komplette Universen.
+```
+MIDI channel →  universe + block   (config.txt, like the input blocks on an X32)
+Note 0–127   →  slot in the block  (note 0 = first channel of the block)
+Velocity     →  DMX value          (1–127 → 2–255, 127 = full)
+Note off     →  rest value         (from the fixture file, default 0)
+CC 0–119     →  same slot as the note, value is held → for fades
+Poly AT      →  changes the value of a held note
+```
 
-## Konfig-Ordner
+Default mapping (freely configurable):
 
-Beim ersten Start legt das Plugin `Dokumente/DMX-Bridge/` mit Beispielen an.
-Den Pfad kannst du im Plugin ändern; er wird im Reaper-Projekt gespeichert.
-**Gespeicherte Änderungen werden automatisch übernommen** (nach ca. 1 s).
+| MIDI channel | Universe | Block | DMX      |
+|-------------:|---------:|------:|----------|
+| 1            | 0        | 1     | 1–128    |
+| 2            | 0        | 2     | 129–256  |
+| 3            | 0        | 3     | 257–384  |
+| 4            | 0        | 4     | 385–512  |
+| 5–8          | 1        | 1–4   | as above |
+| 9–16         | off      |       |          |
+
+## Configuration folder
+
+On first start the plugin creates `Documents/DMX-Bridge/` with example files. Everything
+can be edited inside the plugin (tabs *Patch*, *Fixtures*, *QLC+ Bibliothek*,
+*Einstellungen*) or by hand in any text editor – **saved changes are picked up
+automatically** within about a second. To move your setup to another computer, copy
+the whole folder.
 
 ```
 DMX-Bridge/
-├── config.txt            Art-Net-IP, Rate, MIDI-Kanal → Universum/Block
-├── patch.txt             Name | Fixture | Universum | Startadresse
-├── fixtures/
-│   ├── uking_wash_8ch.txt
-│   ├── par_rgbwauv_8ch.txt
-│   ├── beispiel_movinghead.txt
-│   ├── rgbw_4ch.txt
-│   ├── dimmer_1ch.txt
-│   └── (deine .qxf aus QLC+)
-└── reaper-notennamen/    (wird per Knopf erzeugt)
+├── config.txt          Art-Net target IP, refresh rate, MIDI channel → universe/block
+├── patch.txt           name | fixture | universe | start address
+├── fixtures/           one fixture type per file (.txt or QLC+ .qxf)
+├── oberflaeche.txt     UI size and Hz/BPM (global, all projects)
+└── reaper-notennamen/  Reaper note-name files (created on request)
 ```
 
-Zum Mitnehmen auf ein anderes Gerät kopierst du einfach den ganzen Ordner.
-
-### Fixtures – eigenes Textformat
-
-`fixtures/meinpar.txt` (Dateiname = Name im Patch):
+### config.txt
 
 ```
-name = Mein PAR
-# Kanal | Typ | Bezeichnung | Ruhewert
+artnet_ip   = 192.168.0.50     # IP of your Art-Net node (255.255.255.255 = broadcast)
+artnet_port = 6454
+refresh_hz  = 40
+cc_input    = on
+midi1       = 0 1              # MIDI channel 1 → universe 0, block 1 (DMX 1–128)
+midi2       = 0 2
+midi3       = off
+```
+
+The target IP is the **node's** IP, not your computer's. The *Einstellungen* tab shows
+which IP your computer sends from, warns if the node is in a different subnet, and can
+search the network for nodes.
+
+### Fixture files
+
+`fixtures/my_par.txt` (file name = fixture name used in the patch):
+
+```
+name = My PAR
+# channel | type | label | rest value
 1 | dimmer | Dimmer | 255
-2 | rot    | Rot
-3 | grün   | Grün
-4 | blau   | Blau
-5 | weiß   | Weiß
+2 | red    | Red
+3 | green  | Green
+4 | blue   | Blue
+5 | white  | White
 6 | amber  | Amber
 7 | uv     | UV
 8 | strobe | Strobe
-  0-9    | offen       | kein Strobe        ← Wertebereiche für den Kanal darüber
-  10-255 | strobe 1-25 | Strobe 1–25 Hz
+  0-9    | open        | no strobe        ← value ranges for the channel above
+  10-255 | strobe 1-25 | strobe 1–25 Hz
 ```
 
-**Kanaltypen:** `dimmer, dimmer_fein, rot, grün, blau, weiß, amber, uv, lime, indigo,
-cyan, magenta, gelb, farbrad, farbmakro, cto, strobe, pan, pan_fein, tilt, tilt_fein,
-pt_speed, gobo, gobo_rotation, prisma, prisma_rotation, fokus, zoom, iris, frost,
-rotation, effekt, speed, nebel, wartung, sonst`
+**Channel types:** `dimmer, dimmer_fine, red, green, blue, white, amber, uv, lime, indigo,
+cyan, magenta, yellow, colorwheel, colormacro, cto, strobe, pan, pan_fine, tilt, tilt_fine,
+pt_speed, gobo, gobo_rotation, prism, prism_rotation, focus, zoom, iris, frost, rotation,
+effect, speed, fog, maintenance, other` (German keywords work as well).
 
-**Wertebereiche** (`von-bis | Funktion | Text`), entsprechen den Capabilities in QLC+:
+**Value ranges** (`from-to | function | label`), equivalent to QLC+ capabilities:
 
-| Funktion             | Bedeutung                                      |
-|----------------------|------------------------------------------------|
-| `offen`              | Licht an, kein Strobe                          |
-| `zu`                 | Shutter zu, dunkel                             |
-| `strobe 1-25`        | Strobe, über den Bereich 1 → 25 Hz (auch `strobe 60-1500 bpm`) |
-| `zufall 1-20`        | Zufalls-Strobe                                 |
-| `farbe #ff8000`      | Farbe auf Farbrad/Makro (auch `farbe rot`)     |
-| `farbe rot grün`     | geteilte Farbe                                 |
-| `aus`                | keine Funktion                                 |
-| alles andere         | freier Text (Gobo 3, Auto-Programm …)          |
+| Function               | Meaning                                              |
+|------------------------|------------------------------------------------------|
+| `open`                 | light on, no strobe                                  |
+| `closed`               | shutter closed, dark                                 |
+| `strobe 1-25`          | strobe across the range, 1 → 25 Hz (also `strobe 60-1500 bpm`) |
+| `random 1-20`          | random strobe                                        |
+| `color #ff8000`        | colour on a colour wheel/macro (also `color red`)    |
+| `color red green`      | split colour                                         |
+| `off`                  | no function                                          |
+| anything else          | free text (gobo 3, auto program …)                   |
 
-Ein Strobe-Kanal ohne eigene Bereiche bekommt automatisch: 0–9 offen,
-10–255 = 1–25 Hz. **Die Schwelle (10) bitte an deiner Lampe prüfen.**
+A strobe channel without ranges defaults to 0–9 open, 10–255 = 1–25 Hz – check the
+threshold on your fixture.
 
-### Fixtures – direkt aus QLC+ (.qxf)
+QLC+ fixture files (`.qxf`) can simply be dropped into `fixtures/`; channels, modes,
+default values and capabilities (incl. strobe Hz and colours) are imported.
 
-Kopiere deine QLC+-Fixture-Dateien (Windows: `C:\Users\<du>\QLC+\Fixtures\`)
-einfach in `fixtures/`. Übernommen werden Kanäle, Modi, Default-Werte und Capabilities
-inkl. Strobe-Hz und Farben. Das alte und das neue QLC+-Format werden erkannt.
-
-### Patch
+### patch.txt
 
 ```
-Washer   | uking_wash_8ch  | 0 | 1
-PAR      | par_rgbwauv_8ch | 0 | 9  | anzahl=12          ← PAR 1 … PAR 12 am Stück
-Washer Q | meine_washer    | 0 | 105 | modus=8 Channel   ← Modus einer .qxf
+Washer | uking_wash_8ch  | 0 | 1
+PAR    | par_rgbwauv_8ch | 0 | 9   | count=12          ← PAR 1 … PAR 12 in a row
+Spot   | my_spot         | 0 | 105 | mode=8 Channel    ← mode of a .qxf fixture
 ```
 
-Optionale Spalten: `modus=…` (oder einfach der Modusname), `anzahl=n` (oder `x12`),
-`abstand=n` (Adressabstand, Standard = Kanalanzahl).
+Optional columns: `mode=…`, `count=n` (or `x12`), `spacing=n` (address step,
+default = channel count).
 
-Fehler (Tippfehler, Überschneidungen, Geräte ohne MIDI-Zuordnung) zeigt das Plugin
-gelb/rot an. Es stürzt deswegen nicht ab, und die restliche Konfiguration läuft weiter.
+## Reaper setup
 
-## Reaper-Setup
-
-1. Plugin auf die Licht-MIDI-Spur legen. **Nur eine Instanz pro Projekt.**
-2. **Anticipative FX für diese Spur abschalten** (Rechtsklick auf die Spur →
-   Performance-Optionen → *Prevent anticipative FX*). Sonst rechnet Reaper die Spur
-   voraus, und das Licht kommt rund 200 ms zu früh.
-3. *Preferences → Playback → Chase MIDI note-ons* einschalten. Dann geht das Licht
-   auch beim Start mitten in einer langen Note an.
-4. Beim Stop sendet Reaper „All Notes Off“: Alle Slots gehen auf ihren Ruhewert.
-   Falls Reaper beim Stop zusätzlich CCs zurücksetzt und dabei Werte verstellt:
-   in `config.txt` `cc_eingang = aus` setzen oder das CC-Reset in den Preferences abschalten.
-5. Im Plugin **„Reaper-Notennamen exportieren“** drücken. Im MIDI-Editor dann die
-   passende Datei aus `reaper-notennamen/` laden
-   (*File → Note names → Load note names from file*). Statt „C#-1“ steht dann
-   „Washer: Rot“ im Piano-Roll.
-
-## GUI
-
-Die Größe wählst du oben rechts (50, 75, 100, 125, 150, 200 %). Die komplette Oberfläche
-wird gezoomt – Schrift, Fader und Abstände bleiben im gleichen Verhältnis. Größe und Hz/BPM gelten für alle Projekte
-(`oberflaeche.txt` im Konfig-Ordner).
-
-> **Tippen in Eingabefelder geht nicht?** Reaper gibt die Tastatur sonst nicht an das
-> Plugin weiter: im FX-Fenster die Option **„Send all keyboard input to plugin“** einschalten.
-
-| Tab | Was |
-|---|---|
-| **Live** | Bühnenansicht, Fader pro Kanal, Konfig-Meldungen |
-| **Patch** | Geräte hinzufügen, entfernen, umsortieren; Fixture, Modus, Universum, Adresse, Anzahl |
-| **Fixtures** | eigene Fixtures anlegen und bearbeiten (Kanäle, Typen, Ruhewerte, Wertebereiche); QLC+-Fixtures als bearbeitbare Kopie |
-| **QLC+ Bibliothek** | alle ~1800 Fixtures aus QLC+, nach Herstellern sortiert und durchsuchbar; Modus wählen, mit einem Klick patchen |
-| **Einstellungen** | Node-IP (mit Node-Suche per ArtPoll), Port, Rate, MIDI-Kanal → Universum/Block, Hz/BPM, Konfig-Ordner |
-
-Alles, was du im Plugin speicherst, landet in denselben Textdateien (vorherige Version
-jeweils als `.bak`). Handbearbeitung bleibt möglich.
-
-
-- **Bühne:** eine Kachel pro Gerät mit Live-Farbe (RGBWA+UV, CMY, Farbrad/Makro × Dimmer).
-  Strobe blinkt mit der eingestellten Frequenz, die Hz-Zahl steht in der Kachel.
-  Shutter „zu“ wird dunkel dargestellt. Die Vorschau ist eine Annäherung: Ab etwa
-  20 Hz kommt die Bildrate der GUI nicht mehr ganz mit.
-- **Hz oder BPM:** unter Einstellungen umschaltbar. An jedem Strobe-Kanal gibt es einen
-  Rechner: Wunschfrequenz eingeben → passender DMX-Wert und die MIDI-Velocity für Reaper.
-- **Geräte & Fader:** pro Kanal ein Fader zum Testen, dazu die aktuelle Funktion
-  („Strobe · 12.6 Hz“, „Farbrad: Rot“) und die MIDI-Note. Ein Fader-Wert gilt bis zum
-  nächsten MIDI-Event auf diesem Kanal. „Alle auf Ruhewert“ setzt alles zurück.
-- **Master/Blackout:** Hat ein Gerät einen Dimmer, wird nur der Dimmer heruntergezogen,
-  damit die Farben sauber bleiben. Ohne Dimmer werden die Farbkanäle skaliert.
+1. Put the plugin on your light MIDI track. **One instance per project.**
+2. **Disable anticipative FX for that track** (right-click the track → performance
+   options → *Prevent anticipative FX*). Otherwise Reaper renders ahead and the light
+   is ~200 ms early.
+3. Enable *Preferences → Playback → Chase MIDI note-ons*, so lights come on when you
+   start playback in the middle of a long note.
+4. If you cannot type into text or number fields: in the FX window enable
+   **“Send all keyboard input to plugin”**.
+5. *Einstellungen → Reaper-Notennamen exportieren* writes note-name files; load them in
+   the MIDI editor (*File → Note names → Load note names from file*) to see
+   “Washer: Red” instead of “C#-1”.
 
 ## Fades
 
-- **CC-Lane** (empfohlen): Im MIDI-Editor eine CC-Lane mit derselben Nummer wie
-  die Note öffnen und eine Kurve zeichnen. Reapers Kurvenformen (linear, slow
-  start …) funktionieren direkt. Gilt für die Slots 0–119 jedes Blocks.
-- **Poly-Aftertouch**: Ändert den Wert einer gehaltenen Note.
-- Eine Note setzt den Wert und hält ihn bis Note-Off. Ein CC setzt den Wert
-  dauerhaft bis zum nächsten Event. Es gilt immer das letzte Event (LTP).
+- **CC lane** (recommended): open a CC lane with the same number as the note and draw
+  a curve – Reaper's curve shapes work directly. Works for slots 0–119 of each block.
+- **Poly aftertouch** changes the value of a held note.
+- Latest event wins (LTP).
 
-## Robustheit
+The *Live* tab has a strobe calculator per strobe channel: enter a frequency (Hz or BPM)
+and get the matching DMX value and MIDI velocity.
 
-- Der Audio-Thread schreibt nur atomare Werte: keine Locks, keine Allokationen.
-- Art-Net läuft in einem eigenen Thread mit 40 Hz Keep-Alive. Änderungen gehen
-  sofort raus, aber nie schneller als ca. 44 Hz pro Universum.
-- Netzwerkfehler (Kabel raus, Node neu gestartet): Der Socket wird automatisch neu aufgebaut.
-- „Art-Net Ausgabe“ aus = es wird gar nichts gesendet (z. B. wenn die Haus-Lichtanlage übernimmt).
-- Master und Blackout sind Plugin-Parameter und lassen sich in Reaper automatisieren
-  oder auf einen Controller legen.
+## Robustness
 
-## QLC+-Fixture-Bibliothek
+- The audio thread only writes atomics – no locks, no allocations.
+- Art-Net runs in its own thread with a 40 Hz keep-alive; changes go out immediately
+  (max. ~44 Hz per universe).
+- Network errors (cable unplugged, node rebooted) are recovered automatically.
+- Master and blackout are plugin parameters and can be automated or mapped to a controller.
 
-Die Fixture-Definitionen stammen aus dem Projekt [QLC+](https://www.qlcplus.org)
-(Massimo Callegari und Mitwirkende) und stehen unter der Apache License 2.0
-(`library/QLCPLUS-LICENSE.txt`). Sie sind komprimiert im Plugin eingebettet
-(`library/qlcplus-fixtures.pack`). Aktualisieren:
+## Building from source
 
 ```bash
-git clone --depth 1 https://github.com/mcallegari/qlcplus /tmp/qlcplus
-python3 tools/update_library.py /tmp/qlcplus
+# Rust: https://rustup.rs
+cargo xtask bundle dmx_bridge --release
+# macOS universal binary (Intel + Apple Silicon):
+cargo xtask bundle-universal dmx_bridge --release
 ```
+
+Output: `target/bundled/`. GitHub Actions builds Windows, macOS and Linux on every push;
+*Actions → Build → Run workflow* with a release tag (e.g. `v0.5.0`) creates a release.
+
+## Third-party components
+
+| Component | License | Notes |
+|---|---|---|
+| [QLC+](https://www.qlcplus.org) fixture definitions | Apache 2.0 | `library/` – embedded, unmodified; update with `tools/update_library.py` |
+| [NIH-plug](https://github.com/robbert-vdh/nih-plug) | ISC | plugin framework |
+| [vst3-sys](https://github.com/RustAudio/vst3-sys) | GPLv3 | VST3 bindings used for the VST3 build |
+| `vendor/nih_plug_egui` | ISC | modified copy, see `VENDORED.md` |
+| `vendor/egui-baseview` | MIT | modified copy (UI zoom), see `VENDORED.md` |

@@ -1,9 +1,10 @@
-MIDI-Noten in Reaper direkt als DMX über Art-Net. Kein QLC+ und kein virtuelles MIDI-Kabel nötig.
+MIDI notes in your DAW → DMX over Art-Net, as a CLAP/VST3 plugin.
+*(Deutsch: siehe README.de.md im Repository.)*
 
-> ⚠️ Vorabversionen (alpha/beta) sind nicht live erprobt. Vor einem Gig bitte ausgiebig testen.
+> ⚠️ Pre-releases (alpha/beta) are not tested live yet – test thoroughly before a gig.
 
 ### Downloads
-| System | Datei |
+| System | File |
 |---|---|
 | Windows | `DMX-Bridge-windows.zip` |
 | macOS (Intel + Apple Silicon) | `DMX-Bridge-macos-universal.zip` |
@@ -11,18 +12,10 @@ MIDI-Noten in Reaper direkt als DMX über Art-Net. Kein QLC+ und kein virtuelles
 
 ### Installation
 - **Windows:** `DMX Bridge.clap` → `C:\Program Files\Common Files\CLAP\`
-- **macOS:** `DMX Bridge.clap` → `~/Library/Audio/Plug-Ins/CLAP/`, danach einmalig im Terminal:
+- **macOS:** `DMX Bridge.clap` → `~/Library/Audio/Plug-Ins/CLAP/`, then once in Terminal:
   `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/"DMX Bridge.clap"`
-- In Reaper: Plugin auf die Licht-MIDI-Spur legen und für diese Spur **Anticipative FX abschalten**.
+- **Linux:** `DMX Bridge.clap` → `~/.clap/`
+- In Reaper: put the plugin on your light MIDI track and **disable anticipative FX** for that track.
+  If you cannot type into fields, enable **“Send all keyboard input to plugin”** in the FX window.
 
-### Funktionen
-- MIDI-Kanal → Universum + Block (je 128 Kanäle, wie die X32-Input-Blocks), 16 Kanäle = 4 volle Universen
-- Note = DMX-Kanal, Velocity = Wert, Note-Off = Ruhewert; CC-Lanes für Fades, Poly-Aftertouch
-- Fixtures als Textdateien oder direkt als QLC+-`.qxf`, mit Modi; Patch mit `anzahl=` für viele gleiche Lampen
-- Alle gängigen Kanaltypen (RGBWA+UV, CMY, Farbrad, Pan/Tilt, Gobo, Prisma …) und Wertebereiche inkl. Strobe in Hz
-- Live-Vorschau mit Mischfarbe und blinkendem Strobe, Fader pro Kanal
-- Master, Blackout und Ausgabe-Schalter als automatisierbare Parameter
-- Konfig wird beim Speichern automatisch neu geladen
-- Export von Reaper-Notennamen („PAR 1: Rot“ statt „C#-1“)
-
-Details siehe [README](REPO_URL#readme).
+Full documentation: [README](REPO_URL#readme)
